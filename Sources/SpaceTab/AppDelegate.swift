@@ -1,19 +1,30 @@
 import AppKit
+import Carbon.HIToolbox
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var statusItem: NSStatusItem!
-    private let switcher = SwitcherController()
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private let history = WindowHistory()
+    private lazy var switcher = SwitcherController(history: history)
+    private lazy var focusTracker = FocusTracker(history: history)
     private var hotKeys: HotKeyMonitor!
+    private var statusItem: NSStatusItem!
     private var permissionTimer: Timer?
+    private var trustTimer: Timer?
+    private var failedTrustChecks = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Stop a hung app from freezing the switcher: every Accessibility call
-        // gives up after this many seconds.
+        // Every Accessibility call gives up after this many seconds, so a hung
+        // app can only slow SpaceTab down, not freeze it.
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.25)
 
         hotKeys = HotKeyMonitor { [switcher] type, event in
             switcher.handle(type, event)
+        }
+        hotKeys.onTapReenabled = { [switcher] in
+            switcher.tapReenabled()
+        }
+        hotKeys.onPermissionLost = { [weak self] in
+            self?.permissionLost()
         }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -21,53 +32,106 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             systemSymbolName: "rectangle.on.rectangle",
             accessibilityDescription: "SpaceTab"
         )
-        rebuildMenu()
+        let menu = NSMenu()
+        menu.delegate = self
+        statusItem.menu = menu
 
-        startWhenPermitted()
+        // Shows the macOS permission dialog when the permission is missing.
+        _ = AccessibilityPermission.isGranted(prompt: true)
+        if !startIfPermitted() {
+            waitForPermission()
+        }
     }
 
     // MARK: - Permission
 
-    private func startWhenPermitted() {
-        if AccessibilityPermission.isGranted(prompt: true), hotKeys.start() {
-            rebuildMenu()
-            return
-        }
-        // The user grants the permission in System Settings; poll until they do.
+    private func startIfPermitted() -> Bool {
+        guard AccessibilityPermission.isGranted(prompt: false), hotKeys.start() else { return false }
+        switcher.reset()
+        // Windows on screen now are more recent than anything remembered from
+        // before a permission outage.
+        history.promote(WindowLister.onScreenWindowIDs())
+        focusTracker.start()
+        watchForRevokedPermission()
+        return true
+    }
+
+    /// The user grants the permission in System Settings; poll until they do.
+    private func waitForPermission() {
+        permissionTimer?.invalidate()
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
             MainActor.assumeIsolated {
-                guard let self, AccessibilityPermission.isGranted(prompt: false), self.hotKeys.start() else { return }
+                guard let self, self.startIfPermitted() else { return }
                 timer.invalidate()
                 self.permissionTimer = nil
-                self.rebuildMenu()
             }
         }
     }
 
+    /// Revoking the permission doesn't always turn the tap off, so check for it.
+    private func watchForRevokedPermission() {
+        failedTrustChecks = 0
+        trustTimer?.invalidate()
+        trustTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if AccessibilityPermission.isGranted(prompt: false) {
+                    self.failedTrustChecks = 0
+                } else {
+                    // One failed check can be a false alarm right after waking from sleep.
+                    self.failedTrustChecks += 1
+                    if self.failedTrustChecks >= 2 {
+                        self.permissionLost()
+                    }
+                }
+            }
+        }
+    }
+
+    private func permissionLost() {
+        guard hotKeys.isRunning else { return }
+        trustTimer?.invalidate()
+        trustTimer = nil
+        switcher.reset()
+        hotKeys.stop()
+        focusTracker.stop()
+        waitForPermission()
+    }
+
     // MARK: - Menu
 
-    private func rebuildMenu() {
-        let menu = NSMenu()
+    /// Builds the menu each time it opens, so it always shows the current state.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
 
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         menu.addItem(disabledItem(version.map { "SpaceTab \($0)" } ?? "SpaceTab"))
 
-        if hotKeys.isRunning {
-            menu.addItem(disabledItem("Press ⌥ Tab to switch windows"))
-        } else {
+        if !hotKeys.isRunning {
             menu.addItem(disabledItem("Accessibility permission needed"))
             menu.addItem(item("Open Accessibility Settings…", #selector(openAccessibilitySettings)))
+        } else if IsSecureEventInputEnabled() {
+            // Secure input hides key presses from event taps.
+            menu.addItem(disabledItem("⌥ Tab is paused: an app is using secure input"))
+        } else {
+            menu.addItem(disabledItem("Press ⌥ Tab to switch windows"))
         }
 
         menu.addItem(.separator())
         let launchItem = item("Launch at Login", #selector(toggleLaunchAtLogin))
-        launchItem.state = LaunchAtLogin.isEnabled ? .on : .off
+        switch LaunchAtLogin.status {
+        case .enabled:
+            launchItem.state = .on
+        case .requiresApproval:
+            launchItem.title = "Launch at Login (allow in System Settings)"
+            launchItem.state = .mixed
+        default:
+            launchItem.state = .off
+        }
         menu.addItem(launchItem)
 
         menu.addItem(.separator())
         menu.addItem(item("Quit SpaceTab", #selector(quit), key: "q"))
-
-        statusItem.menu = menu
     }
 
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
@@ -88,14 +152,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleLaunchAtLogin() {
         do {
-            try LaunchAtLogin.setEnabled(!LaunchAtLogin.isEnabled)
+            switch LaunchAtLogin.status {
+            case .enabled:
+                try LaunchAtLogin.disable()
+            case .requiresApproval:
+                LaunchAtLogin.openSettings()
+            default:
+                try LaunchAtLogin.enable()
+            }
         } catch {
             let alert = NSAlert(error: error)
             alert.messageText = "Could not change Launch at Login"
             NSApp.activate()
             alert.runModal()
         }
-        rebuildMenu()
     }
 
     @objc private func quit() {

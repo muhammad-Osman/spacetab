@@ -1,81 +1,260 @@
 import AppKit
-import ApplicationServices
+@preconcurrency import ApplicationServices
 
-/// Private but long-stable API that maps an Accessibility window to its
-/// CoreGraphics window ID. Every macOS window switcher relies on it.
-@_silgen_name("_AXUIElementGetWindow")
-private func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
+struct WindowList {
+    /// Most recently used first.
+    let windows: [WindowInfo]
+    /// Whether the first window is the one you are switching away from.
+    let firstIsCurrent: Bool
+}
 
-enum WindowLister {
-    /// Windows on the current desktop, front to back.
-    ///
-    /// On-screen windows are exactly the ones on the desktop you are looking at,
-    /// and front-to-back order is most recently used order. Minimized and hidden
-    /// windows are not included yet.
-    ///
-    /// CoreGraphics gives the list and order. Titles come from the Accessibility
-    /// API, because CoreGraphics only reports titles with Screen Recording permission.
-    static func windowsOnCurrentDesktop() -> [WindowInfo] {
-        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
-        guard let entries = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
-            return []
+/// Lists the windows on the current desktop.
+///
+/// Makes Accessibility calls, which wait for other apps, so use it off the main
+/// thread. Keeps a cache between calls: use one instance from one serial queue.
+final class WindowLister: @unchecked Sendable {
+    private enum Lookup {
+        case answered([CGWindowID: AXUIElement])
+        /// The app didn't answer in time.
+        case busy
+        /// The app doesn't report windows to Accessibility.
+        case unavailable
+    }
+
+    private struct CachedWindow {
+        let element: AXUIElement
+        let title: String
+    }
+
+    /// Windows each app reported, used while the app is too busy to answer.
+    private var lastKnown: [pid_t: [CGWindowID: CachedWindow]] = [:]
+    /// Windows each app reported last time that the filter left out.
+    private var lastRejected: [pid_t: Set<CGWindowID>] = [:]
+
+    /// IDs of the normal windows on screen, front to back.
+    static func onScreenWindowIDs() -> [CGWindowID] {
+        onScreenEntries().compactMap { entry in
+            guard (entry[kCGWindowLayer as String] as? NSNumber)?.intValue == 0 else { return nil }
+            return (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value
         }
+    }
 
-        let ownPID = ProcessInfo.processInfo.processIdentifier
-        var axWindowsByPID: [pid_t: [CGWindowID: AXUIElement]] = [:]
+    /// The app's front-most normal window on screen, found without asking the app.
+    static func topWindowID(of pid: pid_t) -> CGWindowID? {
+        for entry in onScreenEntries() {
+            guard
+                (entry[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid
+            else { continue }
+            return (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value
+        }
+        return nil
+    }
+
+    /// Windows on the current desktop, most recently used first.
+    ///
+    /// On-screen windows are exactly the ones on the desktop you are looking at.
+    /// CoreGraphics gives the list. Titles come from the Accessibility API,
+    /// because CoreGraphics only reports titles with Screen Recording permission.
+    func windowsOnCurrentDesktop(
+        ranks: [CGWindowID: Int],
+        frontmostPID: pid_t?,
+        pendingSwitch: PendingSwitch?
+    ) -> WindowList {
+        let ownPID = getpid()
+        var lookups: [pid_t: Lookup] = [:]
+        var fresh: [pid_t: [CGWindowID: CachedWindow]] = [:]
+        var rejected: [pid_t: Set<CGWindowID>] = [:]
         var windows: [WindowInfo] = []
 
-        for entry in entries {
+        for entry in Self.onScreenEntries() {
             guard
                 (entry[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
                 let id = (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
                 let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
                 pid != ownPID,
                 (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1 > 0,
+                let boundsDictionary = entry[kCGWindowBounds as String] as? NSDictionary,
+                let bounds = CGRect(dictionaryRepresentation: boundsDictionary as CFDictionary),
                 let app = NSRunningApplication(processIdentifier: pid),
-                app.activationPolicy == .regular
+                app.activationPolicy != .prohibited
             else { continue }
 
-            let axWindows = axWindowsByPID[pid] ?? accessibilityWindows(of: pid)
-            axWindowsByPID[pid] = axWindows
+            var lookup = lookups[pid] ?? accessibilityWindows(of: pid)
+            lookups[pid] = lookup
 
-            // Windows the app doesn't report to Accessibility are overlays,
-            // tooltips and the like, not real windows.
-            guard let element = axWindows[id] else { continue }
+            var element: AXUIElement?
+            var title = ""
+            var resolved = false
+            if case let .answered(axWindows) = lookup {
+                guard let found = axWindows[id] else {
+                    // Windows the app doesn't report to Accessibility are
+                    // overlays, tooltips and the like, not real windows.
+                    rejected[pid, default: []].insert(id)
+                    continue
+                }
+                if let attributes = AX.subroleAndTitle(of: found) {
+                    guard Self.isSwitchable(subrole: attributes.subrole, title: attributes.title, size: bounds.size) else {
+                        rejected[pid, default: []].insert(id)
+                        continue
+                    }
+                    element = found
+                    title = attributes.title
+                    resolved = true
+                    fresh[pid, default: [:]][id] = CachedWindow(element: found, title: title)
+                } else {
+                    // The app stopped answering partway through. Don't wait on it again.
+                    lookup = .busy
+                    lookups[pid] = .busy
+                }
+            }
+
+            if !resolved {
+                guard case .busy = lookup, lastRejected[pid]?.contains(id) != true else { continue }
+                if let cached = lastKnown[pid]?[id] {
+                    // The app is busy. Use what it reported last time.
+                    element = cached.element
+                    title = cached.title
+                } else {
+                    // The app is busy and this window is new. Still list it, so
+                    // the app doesn't vanish from the switcher.
+                    guard Self.isLargeEnough(bounds.size) else { continue }
+                }
+            }
 
             windows.append(WindowInfo(
                 id: id,
                 pid: pid,
                 appName: app.localizedName ?? "",
-                title: stringAttribute(kAXTitleAttribute, of: element) ?? "",
+                title: title,
                 icon: app.icon,
                 element: element
             ))
         }
-        return windows
+
+        updateCache(lookups: lookups, fresh: fresh, rejected: rejected)
+
+        var focusedID: CGWindowID?
+        if let frontmostPID, case .answered = lookups[frontmostPID] {
+            focusedID = AX.focusedWindowID(of: frontmostPID)
+        }
+        return Self.order(
+            windows,
+            ranks: ranks,
+            focusedID: focusedID,
+            frontmostPID: frontmostPID,
+            pendingSwitch: pendingSwitch
+        )
     }
 
-    private static func accessibilityWindows(of pid: pid_t) -> [CGWindowID: AXUIElement] {
-        let app = AXUIElementCreateApplication(pid)
-        var value: CFTypeRef?
-        guard
-            AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success,
-            let elements = value as? [AXUIElement]
-        else { return [:] }
+    /// Puts windows in most recently used order. `windows` is front to back.
+    ///
+    /// A window missing from the history (its focus change was missed) is
+    /// placed just in front of the next known window behind it on screen.
+    /// The window with keyboard focus comes first, unless a switch SpaceTab
+    /// just made hasn't reached its app yet.
+    static func order(
+        _ windows: [WindowInfo],
+        ranks: [CGWindowID: Int],
+        focusedID: CGWindowID?,
+        frontmostPID: pid_t?,
+        pendingSwitch: PendingSwitch?
+    ) -> WindowList {
+        var sortKeys = [(rank: Int, isKnown: Bool, offset: Int)](repeating: (0, false, 0), count: windows.count)
+        var rankBehind = Int.max
+        for offset in windows.indices.reversed() {
+            if let rank = ranks[windows[offset].id] {
+                sortKeys[offset] = (rank, true, offset)
+                rankBehind = rank
+            } else {
+                sortKeys[offset] = (rankBehind, false, offset)
+            }
+        }
+        var ordered = windows.indices
+            .sorted { a, b in
+                let (ka, kb) = (sortKeys[a], sortKeys[b])
+                if ka.rank != kb.rank { return ka.rank < kb.rank }
+                if ka.isKnown != kb.isKnown { return !ka.isKnown }
+                return ka.offset < kb.offset
+            }
+            .map { windows[$0] }
 
+        if let pendingSwitch, pendingSwitch.pid != frontmostPID {
+            // You are still on the way to that window: treat it as current.
+            return WindowList(windows: ordered, firstIsCurrent: ordered.first?.id == pendingSwitch.id)
+        }
+        if let focusedID, let index = ordered.firstIndex(where: { $0.id == focusedID }), index > 0 {
+            // A focus change may have been missed; the focused window is always current.
+            ordered.insert(ordered.remove(at: index), at: 0)
+        }
+        return WindowList(
+            windows: ordered,
+            firstIsCurrent: frontmostPID != nil && ordered.first?.pid == frontmostPID
+        )
+    }
+
+    /// Whether a window the app reports to Accessibility belongs in the switcher.
+    /// Leaves out palettes, popups and notification balloons.
+    static func isSwitchable(subrole: String?, title: String, size: CGSize) -> Bool {
+        switch subrole {
+        case kAXFloatingWindowSubrole, "AXSystemDialog":
+            return false
+        case kAXStandardWindowSubrole:
+            return !title.isEmpty || isLargeEnough(size)
+        case kAXDialogSubrole:
+            return !title.isEmpty
+        default:
+            return !title.isEmpty && isLargeEnough(size)
+        }
+    }
+
+    private static func isLargeEnough(_ size: CGSize) -> Bool {
+        size.width >= 100 && size.height >= 50
+    }
+
+    private static func onScreenEntries() -> [[String: Any]] {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        return CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] ?? []
+    }
+
+    private func accessibilityWindows(of pid: pid_t) -> Lookup {
+        let (elements, busy) = AX.windows(of: pid)
+        guard let elements else { return busy ? .busy : .unavailable }
         var result: [CGWindowID: AXUIElement] = [:]
         for element in elements {
-            var id: CGWindowID = 0
-            if _AXUIElementGetWindow(element, &id) == .success {
+            if let id = AX.windowID(of: element) {
                 result[id] = element
             }
         }
-        return result
+        return .answered(result)
     }
 
-    private static func stringAttribute(_ attribute: String, of element: AXUIElement) -> String? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
-        return value as? String
+    /// Keeps what answering apps reported, including windows on other desktops,
+    /// and forgets windows that no longer exist.
+    private func updateCache(
+        lookups: [pid_t: Lookup],
+        fresh: [pid_t: [CGWindowID: CachedWindow]],
+        rejected: [pid_t: Set<CGWindowID>]
+    ) {
+        for (pid, lookup) in lookups {
+            guard case .answered = lookup else { continue }
+            var cache = lastKnown[pid] ?? [:]
+            cache.merge(fresh[pid] ?? [:]) { $1 }
+            for id in rejected[pid] ?? [] {
+                cache[id] = nil
+            }
+            lastKnown[pid] = cache
+            lastRejected[pid] = rejected[pid] ?? []
+        }
+
+        let allIDs = Set(
+            (CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? [])
+                .compactMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value }
+        )
+        lastKnown = lastKnown.compactMapValues { windows in
+            let existing = windows.filter { allIDs.contains($0.key) }
+            return existing.isEmpty ? nil : existing
+        }
+        lastRejected = lastRejected.filter { NSRunningApplication(processIdentifier: $0.key) != nil }
     }
 }

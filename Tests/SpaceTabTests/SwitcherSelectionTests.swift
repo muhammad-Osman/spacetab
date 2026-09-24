@@ -10,8 +10,14 @@ final class SwitcherSelectionTests: XCTestCase {
         XCTAssertEqual(SwitcherSelection(count: 1, openingBackwards: false).index, 0)
     }
 
+    func testOpeningForwardsWhenFirstIsNotCurrentSelectsFirst() {
+        XCTAssertEqual(SwitcherSelection(count: 3, openingBackwards: false, firstIsCurrent: false).index, 0)
+        XCTAssertEqual(SwitcherSelection(count: 1, openingBackwards: false, firstIsCurrent: false).index, 0)
+    }
+
     func testOpeningBackwardsSelectsLastWindow() {
         XCTAssertEqual(SwitcherSelection(count: 5, openingBackwards: true).index, 4)
+        XCTAssertEqual(SwitcherSelection(count: 5, openingBackwards: true, firstIsCurrent: false).index, 4)
     }
 
     func testMovingWrapsAroundBothEnds() {

@@ -3,17 +3,21 @@ struct SwitcherSelection: Equatable {
     let count: Int
     private(set) var index: Int
 
-    /// Opening forwards selects the second window, the one used before the
-    /// current one, so a quick ⌥ Tab flips between the last two windows.
-    /// Opening backwards (⌥ ⇧ Tab) selects the last window.
-    init(count: Int, openingBackwards: Bool) {
+    /// Opening forwards selects the window used before the current one, so a
+    /// quick ⌥ Tab flips between the last two windows. That is the second
+    /// window, or the first when the first isn't the current one (for example
+    /// when the app in front has no windows). Opening backwards (⌥ ⇧ Tab)
+    /// selects the last window.
+    init(count: Int, openingBackwards: Bool, firstIsCurrent: Bool = true) {
         self.count = count
         if count == 0 {
             index = 0
         } else if openingBackwards {
             index = count - 1
-        } else {
+        } else if firstIsCurrent {
             index = min(1, count - 1)
+        } else {
+            index = 0
         }
     }
 

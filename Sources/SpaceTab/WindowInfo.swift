@@ -6,7 +6,9 @@ struct WindowInfo {
     let appName: String
     let title: String
     let icon: NSImage?
-    let element: AXUIElement
+    /// Nil when the app was too busy to answer Accessibility and had not been
+    /// seen before. Switching to the window then brings its app to the front.
+    let element: AXUIElement?
 
     /// Text to show in the switcher. Falls back to the app name for untitled windows.
     var displayTitle: String {

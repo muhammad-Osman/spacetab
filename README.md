@@ -98,6 +98,8 @@ The first time you open SpaceTab, macOS asks for two permissions:
 
 Turn both on in **System Settings → Privacy & Security**.
 
+<kbd>⌥</kbd> + <kbd>Tab</kbd> pauses while an app has **secure input** on, for example while you type in a password field or when Terminal's Secure Keyboard Entry is enabled. macOS hides key presses from other apps during that time. The menu bar icon's menu tells you when this happens.
+
 SpaceTab does **not** collect data, has **no analytics** and makes **no network requests** apart from optional update checks.
 
 ---
@@ -131,7 +133,9 @@ SpaceTab is a Swift package. To work on it in Xcode, run `open Package.swift`. R
 
 Build and run the app with `scripts/build-app.sh`, not from Xcode: Launch at Login and the Accessibility permission need the app bundle.
 
-The script signs the app ad hoc, so macOS asks for the Accessibility permission again after each build. To keep the permission, sign with your own certificate: `SIGN_IDENTITY="Apple Development: Your Name" scripts/build-app.sh`.
+The script quits a running SpaceTab first, so the next launch runs the new build.
+
+The script signs the app ad hoc, and macOS treats each changed ad hoc build as a new app. When the signature changes, the script resets SpaceTab's Accessibility permission, and you grant it again after opening the new build. To keep the permission across builds, sign with your own certificate: `SIGN_IDENTITY="Apple Development: Your Name" scripts/build-app.sh`. The first build with a certificate needs one last grant. If System Settings shows SpaceTab as allowed but it doesn't work, remove it from the list with the minus button and add it again.
 
 **You need:** Xcode 16 or later and macOS 14 or later.
 
@@ -144,7 +148,8 @@ The script signs the app ad hoc, so macOS asks for the Accessibility permission 
 | App and UI | Swift, AppKit |
 | Global shortcuts | `CGEventTap` |
 | Listing and controlling windows | Accessibility API (`AXUIElement`) |
-| Windows on the current desktop, in most recently used order | `CGWindowListCopyWindowInfo` (on-screen windows, front to back) |
+| Windows on the current desktop | `CGWindowListCopyWindowInfo` (on-screen windows) |
+| Most recently used order | Accessibility focus notifications (`AXObserver`) |
 | Windows on other desktops, minimized windows | Private SkyLight / CGS APIs (planned) |
 | Window thumbnails | ScreenCaptureKit |
 | Automatic updates | Sparkle |

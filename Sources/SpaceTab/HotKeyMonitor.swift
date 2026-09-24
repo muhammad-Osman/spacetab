@@ -1,3 +1,4 @@
+import ApplicationServices
 import CoreGraphics
 
 /// Watches every key press in the system with a `CGEventTap`.
@@ -8,8 +9,15 @@ import CoreGraphics
 final class HotKeyMonitor {
     typealias Handler = @MainActor (CGEventType, CGEvent) -> Bool
 
+    /// Called after macOS turned the tap off (for a slow callback, or secure
+    /// input) and it was turned back on. Events went past the tap meanwhile.
+    var onTapReenabled: (@MainActor () -> Void)?
+    /// Called when the tap was turned off because Accessibility permission was revoked.
+    var onPermissionLost: (@MainActor () -> Void)?
+
     private let onEvent: Handler
     private var tap: CFMachPort?
+    private var source: CFRunLoopSource?
 
     var isRunning: Bool { tap != nil }
 
@@ -37,14 +45,35 @@ final class HotKeyMonitor {
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         self.tap = tap
+        self.source = source
         return true
+    }
+
+    /// Removes the event tap. Don't call it from inside the tap callback.
+    func stop() {
+        guard let tap else { return }
+        CGEvent.tapEnable(tap: tap, enable: false)
+        if let source {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+        }
+        CFMachPortInvalidate(tap)
+        self.tap = nil
+        source = nil
     }
 
     fileprivate func handle(_ type: CGEventType, _ event: CGEvent) -> Bool {
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
-            // macOS turns the tap off if a callback is slow; turn it back on.
-            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            if AXIsProcessTrusted() {
+                if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+                onTapReenabled?()
+            } else {
+                // Without the permission, a tap turned back on could hold up
+                // every key press on the Mac. Tear it down outside this callback.
+                DispatchQueue.main.async { [weak self] in
+                    self?.onPermissionLost?()
+                }
+            }
             return false
         default:
             return onEvent(type, event)

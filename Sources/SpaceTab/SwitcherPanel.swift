@@ -51,6 +51,11 @@ final class SwitcherPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 
     func show(_ windows: [WindowInfo], selectedIndex: Int) {
+        // Overlay scrollers take no width from the rows. Set on every show,
+        // because the scroll view goes back to the system style when that
+        // preference changes (for example when a mouse is plugged in).
+        scrollView.scrollerStyle = .overlay
+
         let rowWidth = Self.width - 2 * Self.padding
         let document = FlippedView(frame: NSRect(
             x: 0, y: 0, width: rowWidth, height: CGFloat(windows.count) * Self.rowHeight
