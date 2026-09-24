@@ -24,37 +24,29 @@ final class SwitcherController {
         case open(SwitcherSelection)
     }
 
-    /// Marks key events SpaceTab replays, so the tap lets them through.
-    private static let replayTag: Int64 = 0x5350_5442
-    private static let maxHeldEvents = 64
     /// How long to wait for the window list after ⌥ was released before giving up.
     private static let loadingTimeout: TimeInterval = 0.5
-    /// How long to hold keys for a switch before giving them to whatever app is in front.
-    private static let holdTimeout: TimeInterval = 1
 
     private let history: WindowHistory
     private let panel = SwitcherPanel()
     private let lister = WindowLister()
     private let activator = WindowActivator()
+    private let keyHold = KeyHold()
     private let listingQueue = DispatchQueue(label: "SpaceTab.listing", qos: .userInteractive)
 
     private var phase = Phase.idle
     private var windows: [WindowInfo] = []
     /// Bumped on every open and cancel, so a window list that arrives late is ignored.
     private var generation = 0
-    /// The app in front when the switcher opened.
-    private var openedFromPID: pid_t?
+    /// The app in front when the switcher opened, and the app of a switch
+    /// still on its way then. Either may be in front when the list arrives.
+    private var openedFromPIDs = Set<pid_t>()
     /// Keys whose key-down was swallowed. Their key-up is swallowed too, and
     /// only theirs, so no app sees a release without a press or misses one.
     private var swallowedKeys = Set<Int64>()
-    /// Keys typed after ⌥ was released but before the switch finished. They
-    /// are replayed to the new window, so ⌥ Tab then ⌘W closes the right one.
-    /// Nil when not holding keys.
-    private var heldEvents: [CGEvent]?
-    /// Bumped for each switch, so only the latest switch releases held keys.
+    /// Bumped for each switch and each new open or cancel, so only the latest
+    /// switch releases held keys.
     private var switchCount = 0
-    /// Bumped each time holding starts or is extended, so only the latest hold times out.
-    private var holdCount = 0
 
     init(history: WindowHistory) {
         self.history = history
@@ -71,7 +63,7 @@ final class SwitcherController {
 
     /// Handles one keyboard event. Returns `true` to swallow it.
     func handle(_ type: CGEventType, _ event: CGEvent) -> Bool {
-        if event.getIntegerValueField(.eventSourceUserData) == Self.replayTag {
+        if event.getIntegerValueField(.eventSourceUserData) == KeyHold.replayTag {
             return false
         }
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
@@ -85,12 +77,19 @@ final class SwitcherController {
             return false
 
         case .keyDown, .keyUp:
-            if heldEvents != nil {
-                let startsNewSwitch = type == .keyDown && keyCode == KeyCode.tab && isSwitcherShortcut(flags)
-                if !startsNewSwitch {
-                    return hold(event, type: type, keyCode: keyCode)
+            if keyHold.isHolding {
+                let isKeyDown = type == .keyDown
+                if isKeyDown, keyCode == KeyCode.tab, isSwitcherShortcut(flags) {
+                    // A new switch: the keys held so far belong to the app in front.
+                    keyHold.release(to: nil)
+                } else if isKeyDown, keyCode == KeyCode.escape, case .loading = phase {
+                    // Esc before the switch happened: don't switch.
+                    swallowedKeys.insert(keyCode)
+                    cancel()
+                    return true
+                } else {
+                    return keyHold.hold(event, type: type, keyCode: keyCode, swallowedKeys: &swallowedKeys)
                 }
-                releaseHeldEvents(to: nil)
             }
             return type == .keyDown
                 ? handleKeyDown(event, keyCode: keyCode, flags: flags)
@@ -104,8 +103,9 @@ final class SwitcherController {
     /// Closes the switcher without switching.
     func cancel() {
         generation += 1
+        switchCount += 1
         close()
-        releaseHeldEvents(to: nil)
+        keyHold.release(to: nil)
     }
 
     /// Cancels and forgets all key state. Call when the event tap is removed or replaced.
@@ -118,6 +118,8 @@ final class SwitcherController {
     /// Key events went past the tap meanwhile, so the recorded state may be stale.
     func tapReenabled() {
         swallowedKeys.removeAll()
+        // Keys typed while the tap was off already went through; send the held ones too.
+        keyHold.release(to: nil)
         if isCapturingKeys, !CGEventSource.flagsState(.combinedSessionState).contains(.maskAlternate) {
             cancel()
         }
@@ -178,72 +180,27 @@ final class SwitcherController {
         flags.contains(.maskAlternate) && !flags.contains(.maskCommand) && !flags.contains(.maskControl)
     }
 
-    // MARK: - Held keys
-
-    private func hold(_ event: CGEvent, type: CGEventType, keyCode: Int64) -> Bool {
-        // The release of a key the switcher swallowed stays swallowed.
-        if type == .keyUp, swallowedKeys.remove(keyCode) != nil {
-            return true
-        }
-        if type == .keyDown, keyCode == KeyCode.escape, case .loading = phase {
-            // Esc before the switch happened: don't switch.
-            swallowedKeys.insert(keyCode)
-            cancel()
-            return true
-        }
-        guard var events = heldEvents, events.count < Self.maxHeldEvents, let copy = event.copy() else {
-            return false
-        }
-        events.append(copy)
-        heldEvents = events
-        return true
-    }
-
-    /// Starts holding keys, or keeps holding them for another step of the switch.
-    private func startHolding() {
-        if heldEvents == nil {
-            heldEvents = []
-        }
-        holdCount += 1
-        let holdCount = self.holdCount
-        // Never hold the keyboard for long, whatever happens to the switch.
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.holdTimeout) { [weak self] in
-            guard let self, self.holdCount == holdCount else { return }
-            self.releaseHeldEvents(to: nil)
-        }
-    }
-
-    /// Replays held keys: to the app with `pid`, or to whatever app is in front when nil.
-    private func releaseHeldEvents(to pid: pid_t?) {
-        guard let events = heldEvents else { return }
-        heldEvents = nil
-        for event in events {
-            event.setIntegerValueField(.eventSourceUserData, value: Self.replayTag)
-            if let pid {
-                event.postToPid(pid)
-            } else {
-                event.post(tap: .cgSessionEventTap)
-            }
-        }
-    }
-
     // MARK: - Switching
 
     private func open(backwards: Bool) {
         generation += 1
+        // An earlier switch still on its way must not release keys held for this one.
+        switchCount += 1
         let generation = self.generation
         phase = .loading(backwards: backwards, moves: 0, released: false)
 
         let ranks = history.ranks()
         let pendingSwitch = history.pendingSwitch()
+        let options = ListingOptions.current()
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        openedFromPID = frontmostPID
+        openedFromPIDs = Set([frontmostPID, pendingSwitch?.pid].compactMap { $0 })
         let lister = self.lister
         listingQueue.async {
             let list = lister.windowsOnCurrentDesktop(
                 ranks: ranks,
                 frontmostPID: frontmostPID,
-                pendingSwitch: pendingSwitch
+                pendingSwitch: pendingSwitch,
+                options: options
             )
             DispatchQueue.main.async { [weak self] in
                 self?.listReady(list, generation: generation)
@@ -268,7 +225,8 @@ final class SwitcherController {
         if released {
             // ⌥ was let go before the list was ready: switch without showing
             // the panel, unless you moved to another app in the meantime.
-            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == openedFromPID else {
+            let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            guard let frontmostPID, openedFromPIDs.contains(frontmostPID) else {
                 cancel()
                 return
             }
@@ -277,7 +235,7 @@ final class SwitcherController {
         } else {
             windows = list.windows
             phase = .open(selection)
-            panel.show(windows, selectedIndex: selection.index)
+            panel.show(windows, selectedIndex: selection.index, style: AppSettings.style)
         }
     }
 
@@ -301,7 +259,7 @@ final class SwitcherController {
         case let .loading(backwards, moves, released):
             guard !released else { return }
             phase = .loading(backwards: backwards, moves: moves, released: true)
-            startHolding()
+            keyHold.start()
             let generation = self.generation
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.loadingTimeout) { [weak self] in
                 guard let self, self.generation == generation, case .loading = self.phase else { return }
@@ -318,10 +276,11 @@ final class SwitcherController {
         history.switched(to: window.id, pid: window.pid)
         switchCount += 1
         let switchCount = self.switchCount
-        startHolding()
-        activator.activate(window) { [weak self] in
+        keyHold.start(target: window.pid)
+        activator.activate(window) { [weak self] reachedWindow in
             guard let self, self.switchCount == switchCount else { return }
-            self.releaseHeldEvents(to: window.pid)
+            // Keys go to the new window only if SpaceTab could bring it forward.
+            self.keyHold.release(to: reachedWindow ? window.pid : nil)
         }
     }
 

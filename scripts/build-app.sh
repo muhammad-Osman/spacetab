@@ -49,8 +49,10 @@ echo "Built $APP"
 
 NEW_REQ="$(designated_requirement "$APP")"
 if [ "$OLD_REQ" != "$NEW_REQ" ]; then
+    # Screen Recording is tied to the signature too; it is only needed for thumbnails.
+    tccutil reset ScreenCapture "$BUNDLE_ID" >/dev/null 2>&1 || true
     if tccutil reset Accessibility "$BUNDLE_ID" >/dev/null 2>&1; then
-        echo "Signature changed: Accessibility permission reset. Grant it again after opening the app."
+        echo "Signature changed: Accessibility and Screen Recording permissions reset. Grant them again after opening the app."
     elif [ -n "$OLD_REQ" ]; then
         echo "Signature changed: if SpaceTab shows as allowed in Accessibility settings but doesn't work,"
         echo "remove it from the list with the minus button and add it again."

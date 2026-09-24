@@ -1,20 +1,23 @@
 import AppKit
 
-/// The switcher on screen, in Titles style: one row per window with the app
-/// icon, window title and app name.
+/// The switcher on screen, in the chosen style.
 ///
 /// A non-activating panel, so opening it never takes focus from the app you
 /// are switching away from.
 @MainActor
 final class SwitcherPanel: NSPanel {
-    private static let width: CGFloat = 560
-    private static let rowHeight: CGFloat = 32
-    private static let padding: CGFloat = 8
-    private static let maxScreenFraction: CGFloat = 0.7
+    private static let padding: CGFloat = 12
+    private static let maxWidthFraction: CGFloat = 0.9
+    private static let maxHeightFraction: CGFloat = 0.8
+    private static let titleBelowHeight: CGFloat = 30
+    private static let minWidthWithTitleBelow: CGFloat = 360
 
+    private let thumbnails = ThumbnailStore()
     private let scrollView = NSScrollView()
-    private var rows: [SwitcherRowView] = []
+    private let titleBelow = NSTextField(labelWithString: "")
+    private var cells: [SwitcherCell] = []
     private var selectedIndex = 0
+    private var captureTask: Task<Void, Never>?
 
     init() {
         super.init(
@@ -36,64 +39,106 @@ final class SwitcherPanel: NSPanel {
         background.blendingMode = .behindWindow
         background.state = .active
         background.wantsLayer = true
-        background.layer?.cornerRadius = 12
+        background.layer?.cornerRadius = 14
         background.layer?.masksToBounds = true
         contentView = background
 
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
-        scrollView.autoresizingMask = [.width, .height]
         background.addSubview(scrollView)
+
+        titleBelow.font = .systemFont(ofSize: 13, weight: .medium)
+        titleBelow.alignment = .center
+        titleBelow.lineBreakMode = .byTruncatingMiddle
+        background.addSubview(titleBelow)
     }
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    func show(_ windows: [WindowInfo], selectedIndex: Int) {
-        // Overlay scrollers take no width from the rows. Set on every show,
+    func show(_ windows: [WindowInfo], selectedIndex: Int, style: SwitcherStyle) {
+        captureTask?.cancel()
+        captureTask = nil
+        // Overlay scrollers take no width from the cells. Set on every show,
         // because the scroll view goes back to the system style when that
         // preference changes (for example when a mouse is plugged in).
         scrollView.scrollerStyle = .overlay
 
-        let rowWidth = Self.width - 2 * Self.padding
-        let document = FlippedView(frame: NSRect(
-            x: 0, y: 0, width: rowWidth, height: CGFloat(windows.count) * Self.rowHeight
-        ))
-        rows = windows.enumerated().map { index, window in
-            let row = SwitcherRowView(window: window, frame: NSRect(
-                x: 0, y: CGFloat(index) * Self.rowHeight, width: rowWidth, height: Self.rowHeight
-            ))
-            document.addSubview(row)
-            return row
+        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? .zero
+        let available = CGSize(
+            width: visible.width * Self.maxWidthFraction - 2 * Self.padding,
+            height: visible.height * Self.maxHeightFraction - 2 * Self.padding
+        )
+
+        var thumbnailSize: CGSize?
+        let layout: CellLayout
+        switch style {
+        case .titles:
+            layout = TitleCell.layout(for: windows)
+        case .appIcons:
+            layout = IconCell.layout(for: windows, availableWidth: available.width)
+        case .thumbnails:
+            (layout, thumbnailSize) = ThumbnailCell.layout(for: windows, available: available, thumbnails: thumbnails)
         }
+        cells = layout.cells
+
+        let document = FlippedView(frame: NSRect(origin: .zero, size: layout.contentSize))
+        cells.forEach(document.addSubview)
         scrollView.documentView = document
 
-        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
-            ?? NSScreen.main
-        let visible = screen?.visibleFrame ?? .zero
-        let height = min(document.frame.height, visible.height * Self.maxScreenFraction) + 2 * Self.padding
-        let frame = NSRect(
-            x: visible.midX - Self.width / 2,
-            y: visible.midY - height / 2,
-            width: Self.width,
-            height: height
+        let belowHeight = layout.showsTitleBelow ? Self.titleBelowHeight : 0
+        let shown = CGSize(
+            width: min(layout.contentSize.width, available.width),
+            height: min(layout.contentSize.height, available.height - belowHeight)
         )
-        setFrame(frame, display: false)
-        scrollView.frame = contentView!.bounds.insetBy(dx: Self.padding, dy: Self.padding)
+        let minWidth = layout.showsTitleBelow ? Self.minWidthWithTitleBelow : 0
+        let size = CGSize(
+            width: max(shown.width + 2 * Self.padding, minWidth),
+            height: shown.height + belowHeight + 2 * Self.padding
+        )
+        setFrame(
+            NSRect(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2, width: size.width, height: size.height),
+            display: false
+        )
+        scrollView.frame = NSRect(
+            x: (size.width - shown.width) / 2,
+            y: Self.padding + belowHeight,
+            width: shown.width,
+            height: shown.height
+        )
+        titleBelow.isHidden = !layout.showsTitleBelow
+        titleBelow.frame = NSRect(x: Self.padding, y: Self.padding + 4, width: size.width - 2 * Self.padding, height: 20)
 
         self.selectedIndex = selectedIndex
-        rows[selectedIndex].isSelected = true
-        rows[selectedIndex].scrollToVisible(rows[selectedIndex].bounds)
+        select(selectedIndex)
         orderFrontRegardless()
+
+        if let thumbnailSize {
+            let scale = screen?.backingScaleFactor ?? 2
+            captureTask = thumbnails.capture(windows, maxPixelWidth: Int(thumbnailSize.width * scale)) { [weak self] index, image in
+                guard let self, let cell = self.cells[safe: index] as? ThumbnailCell else { return }
+                cell.setPreview(image)
+            }
+        }
     }
 
     func select(_ index: Int) {
-        guard rows.indices.contains(index) else { return }
-        rows[selectedIndex].isSelected = false
+        guard cells.indices.contains(index) else { return }
+        cells[safe: selectedIndex]?.isSelected = false
         selectedIndex = index
-        rows[index].isSelected = true
-        rows[index].scrollToVisible(rows[index].bounds)
+        let cell = cells[index]
+        cell.isSelected = true
+        cell.scrollToVisible(cell.bounds)
+        let detail = cell.detail
+        titleBelow.stringValue = detail.isEmpty ? cell.windowInfo.displayTitle : "\(cell.windowInfo.displayTitle) — \(detail)"
+    }
+
+    override func orderOut(_ sender: Any?) {
+        captureTask?.cancel()
+        captureTask = nil
+        super.orderOut(sender)
     }
 }
 
@@ -101,64 +146,8 @@ private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
-private final class SwitcherRowView: NSView {
-    private let titleLabel: NSTextField
-    private let appLabel: NSTextField
-
-    var isSelected = false {
-        didSet { updateColors() }
-    }
-
-    init(window: WindowInfo, frame: NSRect) {
-        titleLabel = NSTextField(labelWithString: window.displayTitle)
-        appLabel = NSTextField(labelWithString: window.title.isEmpty ? "" : window.appName)
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.cornerRadius = 6
-
-        let iconSize: CGFloat = 20
-        let appWidth: CGFloat = 150
-        let iconView = NSImageView(frame: NSRect(
-            x: 8, y: (frame.height - iconSize) / 2, width: iconSize, height: iconSize
-        ))
-        iconView.image = window.icon
-        iconView.imageScaling = .scaleProportionallyUpOrDown
-
-        titleLabel.font = .systemFont(ofSize: 13)
-        titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.sizeToFit()
-        let titleX = iconView.frame.maxX + 10
-        titleLabel.frame = NSRect(
-            x: titleX,
-            y: (frame.height - titleLabel.frame.height) / 2,
-            width: frame.width - titleX - appWidth - 16,
-            height: titleLabel.frame.height
-        )
-
-        appLabel.font = .systemFont(ofSize: 12)
-        appLabel.alignment = .right
-        appLabel.lineBreakMode = .byTruncatingTail
-        appLabel.sizeToFit()
-        appLabel.frame = NSRect(
-            x: frame.width - appWidth - 10,
-            y: (frame.height - appLabel.frame.height) / 2,
-            width: appWidth,
-            height: appLabel.frame.height
-        )
-
-        addSubview(iconView)
-        addSubview(titleLabel)
-        addSubview(appLabel)
-        updateColors()
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not used")
-    }
-
-    private func updateColors() {
-        layer?.backgroundColor = isSelected ? NSColor.controlAccentColor.cgColor : nil
-        titleLabel.textColor = isSelected ? .white : .labelColor
-        appLabel.textColor = isSelected ? NSColor.white.withAlphaComponent(0.8) : .secondaryLabelColor
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }

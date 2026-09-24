@@ -54,31 +54,24 @@ final class WindowLister: @unchecked Sendable {
     /// Windows on the current desktop, most recently used first.
     ///
     /// On-screen windows are exactly the ones on the desktop you are looking at.
-    /// CoreGraphics gives the list. Titles come from the Accessibility API,
-    /// because CoreGraphics only reports titles with Screen Recording permission.
+    /// Minimized windows and windows of hidden apps are off screen, so their
+    /// desktop is looked up with private Spaces APIs. CoreGraphics gives the
+    /// list. Titles come from the Accessibility API, because CoreGraphics only
+    /// reports titles with Screen Recording permission.
     func windowsOnCurrentDesktop(
         ranks: [CGWindowID: Int],
         frontmostPID: pid_t?,
-        pendingSwitch: PendingSwitch?
+        pendingSwitch: PendingSwitch?,
+        options: ListingOptions
     ) -> WindowList {
-        let ownPID = getpid()
         var lookups: [pid_t: Lookup] = [:]
         var fresh: [pid_t: [CGWindowID: CachedWindow]] = [:]
         var rejected: [pid_t: Set<CGWindowID>] = [:]
         var windows: [WindowInfo] = []
 
-        for entry in Self.onScreenEntries() {
-            guard
-                (entry[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
-                let id = (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
-                let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
-                pid != ownPID,
-                (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1 > 0,
-                let boundsDictionary = entry[kCGWindowBounds as String] as? NSDictionary,
-                let bounds = CGRect(dictionaryRepresentation: boundsDictionary as CFDictionary),
-                let app = NSRunningApplication(processIdentifier: pid),
-                app.activationPolicy != .prohibited
-            else { continue }
+        let onScreen = Self.onScreenEntries()
+        for entry in onScreen {
+            guard let (id, pid, bounds, app) = Self.candidate(entry, options: options) else { continue }
 
             var lookup = lookups[pid] ?? accessibilityWindows(of: pid)
             lookups[pid] = lookup
@@ -93,7 +86,7 @@ final class WindowLister: @unchecked Sendable {
                     rejected[pid, default: []].insert(id)
                     continue
                 }
-                if let attributes = AX.subroleAndTitle(of: found) {
+                if let attributes = AX.windowAttributes(of: found) {
                     guard Self.isSwitchable(subrole: attributes.subrole, title: attributes.title, size: bounds.size) else {
                         rejected[pid, default: []].insert(id)
                         continue
@@ -132,25 +125,134 @@ final class WindowLister: @unchecked Sendable {
             ))
         }
 
+        if options.minimizedWindows != .hidden || options.hiddenAppWindows != .hidden {
+            let onScreenIDs = Set(onScreen.compactMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value })
+            windows += offScreenWindows(excluding: onScreenIDs, options: options, lookups: &lookups)
+        }
+
         updateCache(lookups: lookups, fresh: fresh, rejected: rejected)
 
         var focusedID: CGWindowID?
         if let frontmostPID, case .answered = lookups[frontmostPID] {
             focusedID = AX.focusedWindowID(of: frontmostPID)
         }
+        // With one screen chosen, the window you are in may be on another
+        // screen. Then the first listed window isn't the current one, even
+        // if it belongs to the same app.
+        var focusedElsewhere = false
+        if options.onlyScreen != nil, let frontmostPID {
+            let focusedEntry = onScreen.first { entry in
+                let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+                let id = (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value
+                let isNormal = (entry[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
+                return focusedID.map { id == $0 } ?? (pid == frontmostPID && isNormal)
+            }
+            if let boundsDictionary = focusedEntry?[kCGWindowBounds as String] as? NSDictionary,
+               let bounds = CGRect(dictionaryRepresentation: boundsDictionary as CFDictionary) {
+                focusedElsewhere = !options.includes(bounds)
+            }
+        }
+        var atEnd = Set<WindowInfo.State>()
+        if options.minimizedWindows == .atEnd { atEnd.insert(.minimized) }
+        if options.hiddenAppWindows == .atEnd { atEnd.insert(.appHidden) }
         return Self.order(
             windows,
             ranks: ranks,
             focusedID: focusedID,
             frontmostPID: frontmostPID,
-            pendingSwitch: pendingSwitch
+            pendingSwitch: pendingSwitch,
+            focusedElsewhere: focusedElsewhere,
+            atEnd: atEnd
         )
     }
 
-    /// Puts windows in most recently used order. `windows` is front to back.
+    /// Minimized windows and windows of hidden apps on the current desktop.
+    private func offScreenWindows(
+        excluding onScreenIDs: Set<CGWindowID>,
+        options: ListingOptions,
+        lookups: inout [pid_t: Lookup]
+    ) -> [WindowInfo] {
+        guard let currentSpaces = Spaces.currentSpaceIDs() else { return [] }
+        let entries = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        var windows: [WindowInfo] = []
+
+        for entry in entries {
+            guard
+                let (id, pid, bounds, app) = Self.candidate(entry, options: options),
+                !onScreenIDs.contains(id),
+                Self.isLargeEnough(bounds.size),
+                !Spaces.spaceIDs(of: id).isDisjoint(with: currentSpaces)
+            else { continue }
+
+            // Only minimized windows can be off screen in an app that isn't
+            // hidden. Don't ask apps that can't have any listed.
+            guard app.isHidden || options.minimizedWindows != .hidden else { continue }
+
+            // Minimized state only comes from Accessibility, so skip busy apps.
+            let lookup = lookups[pid] ?? accessibilityWindows(of: pid)
+            lookups[pid] = lookup
+            // A window missing from Accessibility off screen is usually one the
+            // app closed but kept, not an overlay, so it isn't marked rejected.
+            guard case let .answered(axWindows) = lookup, let element = axWindows[id] else { continue }
+            guard let attributes = AX.windowAttributes(of: element) else {
+                // The app stopped answering. Don't wait on it for its other windows.
+                lookups[pid] = .busy
+                continue
+            }
+            guard Self.isSwitchable(subrole: attributes.subrole, title: attributes.title, size: bounds.size) else { continue }
+
+            let state: WindowInfo.State
+            if attributes.isMinimized {
+                guard options.minimizedWindows != .hidden else { continue }
+                state = .minimized
+            } else if app.isHidden {
+                guard options.hiddenAppWindows != .hidden else { continue }
+                state = .appHidden
+            } else {
+                // Off screen for another reason, such as a window being set up.
+                continue
+            }
+
+            windows.append(WindowInfo(
+                id: id,
+                pid: pid,
+                appName: app.localizedName ?? "",
+                title: attributes.title,
+                icon: app.icon,
+                element: element,
+                state: state
+            ))
+        }
+        return windows
+    }
+
+    /// The basic checks every listed window passes: a normal window of a
+    /// running app, not SpaceTab's own, on the chosen screen.
+    private static func candidate(
+        _ entry: [String: Any],
+        options: ListingOptions
+    ) -> (id: CGWindowID, pid: pid_t, bounds: CGRect, app: NSRunningApplication)? {
+        guard
+            (entry[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+            let id = (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+            let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+            pid != getpid(),
+            (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1 > 0,
+            let boundsDictionary = entry[kCGWindowBounds as String] as? NSDictionary,
+            let bounds = CGRect(dictionaryRepresentation: boundsDictionary as CFDictionary),
+            options.includes(bounds),
+            let app = NSRunningApplication(processIdentifier: pid),
+            app.activationPolicy != .prohibited
+        else { return nil }
+        return (id, pid, bounds, app)
+    }
+
+    /// Puts windows in most recently used order. `windows` is front to back,
+    /// with off-screen windows last.
     ///
     /// A window missing from the history (its focus change was missed) is
     /// placed just in front of the next known window behind it on screen.
+    /// Windows in an `atEnd` state go after all others.
     /// The window with keyboard focus comes first, unless a switch SpaceTab
     /// just made hasn't reached its app yet.
     static func order(
@@ -158,16 +260,23 @@ final class WindowLister: @unchecked Sendable {
         ranks: [CGWindowID: Int],
         focusedID: CGWindowID?,
         frontmostPID: pid_t?,
-        pendingSwitch: PendingSwitch?
+        pendingSwitch: PendingSwitch?,
+        focusedElsewhere: Bool = false,
+        atEnd: Set<WindowInfo.State> = []
     ) -> WindowList {
         var sortKeys = [(rank: Int, isKnown: Bool, offset: Int)](repeating: (0, false, 0), count: windows.count)
+        // Only windows on screen have a place in front-to-back order, so only
+        // they pass their rank to unknown windows in front of them.
         var rankBehind = Int.max
         for offset in windows.indices.reversed() {
+            let isOnScreen = windows[offset].state == .normal
             if let rank = ranks[windows[offset].id] {
                 sortKeys[offset] = (rank, true, offset)
-                rankBehind = rank
+                if isOnScreen {
+                    rankBehind = rank
+                }
             } else {
-                sortKeys[offset] = (rankBehind, false, offset)
+                sortKeys[offset] = (isOnScreen ? rankBehind : Int.max, false, offset)
             }
         }
         var ordered = windows.indices
@@ -178,6 +287,10 @@ final class WindowLister: @unchecked Sendable {
                 return ka.offset < kb.offset
             }
             .map { windows[$0] }
+        if !atEnd.isEmpty {
+            // Stable: both groups keep their most recently used order.
+            ordered = ordered.filter { !atEnd.contains($0.state) } + ordered.filter { atEnd.contains($0.state) }
+        }
 
         if let pendingSwitch, pendingSwitch.pid != frontmostPID {
             // You are still on the way to that window: treat it as current.
@@ -189,7 +302,7 @@ final class WindowLister: @unchecked Sendable {
         }
         return WindowList(
             windows: ordered,
-            firstIsCurrent: frontmostPID != nil && ordered.first?.pid == frontmostPID
+            firstIsCurrent: !focusedElsewhere && frontmostPID != nil && ordered.first?.pid == frontmostPID
         )
     }
 

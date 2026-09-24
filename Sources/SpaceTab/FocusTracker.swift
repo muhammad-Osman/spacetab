@@ -11,6 +11,9 @@ import AppKit
 @MainActor
 final class FocusTracker {
     private static let maxAttempts = 5
+    /// After giving up on an app that is still starting, try again this much later, this many times.
+    private static let slowLaunchRetryDelay: TimeInterval = 2
+    private static let maxSlowLaunchRetries = 5
     private static let focusReadAttempts = 3
 
     private let history: WindowHistory
@@ -21,6 +24,9 @@ final class FocusTracker {
     private var pending = Set<pid_t>()
     /// Apps that can't send focus notifications. Not retried.
     private var unsupported = Set<pid_t>()
+    /// Apps activated while their observer was still being set up.
+    private var activatedWhilePending = Set<pid_t>()
+    private var slowLaunchRetries: [pid_t: Int] = [:]
     private var activationToken: NSObjectProtocol?
     private var runningAppsObservation: NSKeyValueObservation?
 
@@ -122,12 +128,15 @@ final class FocusTracker {
     }
 
     private func observe(_ pid: pid_t, attempt: Int = 1) {
+        if attempt == 1, pending.contains(pid) {
+            activatedWhilePending.insert(pid)
+            return
+        }
         guard
             isRunning,
             pid != getpid(),
             observers[pid] == nil,
             !unsupported.contains(pid),
-            attempt > 1 || !pending.contains(pid),
             let app = NSRunningApplication(processIdentifier: pid),
             !app.isTerminated,
             app.activationPolicy != .prohibited
@@ -150,6 +159,7 @@ final class FocusTracker {
                 switch result {
                 case .success:
                     self.pending.remove(pid)
+                    self.activatedWhilePending.remove(pid)
                     self.observers[pid] = observer
                     CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
                 case .notificationUnsupported, .notImplemented:
@@ -157,8 +167,8 @@ final class FocusTracker {
                     self.unsupported.insert(pid)
                 default:
                     guard attempt < Self.maxAttempts else {
-                        // Tried again the next time the app is activated.
                         self.pending.remove(pid)
+                        self.retryLater(pid)
                         return
                     }
                     // A freshly launched or busy app isn't ready yet. Try again shortly.
@@ -170,9 +180,25 @@ final class FocusTracker {
         }
     }
 
+    /// An app that is slow to start (Xcode opening a big project) isn't
+    /// ready within the first attempts. If you are using it, try again later;
+    /// otherwise the next activation tries again.
+    private func retryLater(_ pid: pid_t) {
+        let wasActivated = activatedWhilePending.remove(pid) != nil
+        let isFrontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+        let retries = slowLaunchRetries[pid, default: 0]
+        guard wasActivated || isFrontmost, retries < Self.maxSlowLaunchRetries else { return }
+        slowLaunchRetries[pid] = retries + 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.slowLaunchRetryDelay) { [weak self] in
+            self?.observe(pid)
+        }
+    }
+
     private func stopObserving(_ pid: pid_t) {
         pending.remove(pid)
         unsupported.remove(pid)
+        activatedWhilePending.remove(pid)
+        slowLaunchRetries[pid] = nil
         guard let observer = observers.removeValue(forKey: pid) else { return }
         CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
     }

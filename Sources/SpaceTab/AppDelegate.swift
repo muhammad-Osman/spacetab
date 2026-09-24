@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let history = WindowHistory()
     private lazy var switcher = SwitcherController(history: history)
     private lazy var focusTracker = FocusTracker(history: history)
+    private let settingsWindow = SettingsWindowController()
     private var hotKeys: HotKeyMonitor!
     private var statusItem: NSStatusItem!
     private var permissionTimer: Timer?
@@ -35,6 +36,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+        // Not shown, since SpaceTab has no menu bar of its own, but gives the
+        // Settings window ⌘W.
+        NSApp.mainMenu = Self.makeMainMenu()
 
         // Shows the macOS permission dialog when the permission is missing.
         _ = AccessibilityPermission.isGranted(prompt: true)
@@ -118,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        menu.addItem(item("Settings…", #selector(openSettings), key: ","))
         let launchItem = item("Launch at Login", #selector(toggleLaunchAtLogin))
         switch LaunchAtLogin.status {
         case .enabled:
@@ -146,6 +151,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return item
     }
 
+    /// Only ⌘W. ⌘Q is left out on purpose: pressed while SpaceTab happens to
+    /// be the active app, it would quit the switcher instead of the app you meant.
+    private static func makeMainMenu() -> NSMenu {
+        let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        let fileItem = NSMenuItem()
+        fileItem.submenu = fileMenu
+        let mainMenu = NSMenu()
+        mainMenu.addItem(NSMenuItem())
+        mainMenu.addItem(fileItem)
+        return mainMenu
+    }
+
+    @objc private func openSettings() {
+        settingsWindow.show()
+    }
+
     @objc private func openAccessibilitySettings() {
         AccessibilityPermission.openSettings()
     }
@@ -165,7 +187,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             alert.messageText = "Could not change Launch at Login"
             NSApp.activate()
             alert.runModal()
+            if !settingsWindow.isVisible {
+                NSApp.hide(nil)
+            }
         }
+        NotificationCenter.default.post(name: .launchAtLoginChanged, object: nil)
     }
 
     @objc private func quit() {

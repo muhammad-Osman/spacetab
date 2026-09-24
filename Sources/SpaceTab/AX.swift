@@ -36,17 +36,33 @@ enum AX {
         return (value as? [AXUIElement], false)
     }
 
-    /// A window's subrole and title, read in one call. Nil when the app didn't answer in time.
-    static func subroleAndTitle(of element: AXUIElement) -> (subrole: String?, title: String)? {
+    struct WindowAttributes {
+        var subrole: String?
+        var title = ""
+        var isMinimized = false
+    }
+
+    /// A window's subrole, title and minimized state, read in one call. Nil
+    /// when the app didn't answer in time.
+    static func windowAttributes(of element: AXUIElement) -> WindowAttributes? {
         var values: CFArray?
-        let attributes = [kAXSubroleAttribute, kAXTitleAttribute] as CFArray
+        let attributes = [kAXSubroleAttribute, kAXTitleAttribute, kAXMinimizedAttribute] as CFArray
         let result = AXUIElementCopyMultipleAttributeValues(element, attributes, AXCopyMultipleAttributeOptions(), &values)
         if result == .cannotComplete {
             return nil
         }
-        // Missing attributes come back as error values, which aren't strings.
-        guard result == .success, let array = values as? [Any], array.count == 2 else { return (nil, "") }
-        return (array[0] as? String, array[1] as? String ?? "")
+        // Missing attributes come back as error values, which aren't strings or booleans.
+        guard result == .success, let array = values as? [Any], array.count == 3 else { return WindowAttributes() }
+        return WindowAttributes(
+            subrole: array[0] as? String,
+            title: array[1] as? String ?? "",
+            isMinimized: (array[2] as? Bool) ?? false
+        )
+    }
+
+    /// Whether the app is the one in front.
+    static func isFrontmost(_ pid: pid_t) -> Bool {
+        (value(kAXFrontmostAttribute, of: AXUIElementCreateApplication(pid)) as? Bool) ?? false
     }
 
     /// The window that has keyboard focus in the app, if any.

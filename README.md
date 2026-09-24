@@ -150,7 +150,9 @@ The script signs the app ad hoc, and macOS treats each changed ad hoc build as a
 | Listing and controlling windows | Accessibility API (`AXUIElement`) |
 | Windows on the current desktop | `CGWindowListCopyWindowInfo` (on-screen windows) |
 | Most recently used order | Accessibility focus notifications (`AXObserver`) |
-| Windows on other desktops, minimized windows | Private SkyLight / CGS APIs (planned) |
+| Minimized windows and windows of hidden apps on the current desktop | Private SkyLight / CGS APIs (`CGSCopySpacesForWindows`) |
+| Settings window | SwiftUI |
+| Windows on other desktops | Private SkyLight / CGS APIs (planned) |
 | Window thumbnails | ScreenCaptureKit |
 | Automatic updates | Sparkle |
 
