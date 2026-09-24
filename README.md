@@ -161,12 +161,12 @@ The script signs the app ad hoc, and macOS treats each changed ad hoc build as a
 ## Roadmap
 
 ### v0.1: Basic switcher
-- [ ] Menu bar app with launch at login
-- [ ] <kbd>⌥</kbd> + <kbd>Tab</kbd> global shortcut
-- [ ] List the windows on the current desktop
-- [ ] Most recently used order
-- [ ] Switch to the selected window
-- [ ] Titles style
+- [x] Menu bar app with launch at login
+- [x] <kbd>⌥</kbd> + <kbd>Tab</kbd> global shortcut
+- [x] List the windows on the current desktop
+- [x] Most recently used order
+- [x] Switch to the selected window
+- [x] Titles style
 
 ### v0.5: Daily use
 - [ ] Thumbnails and App Icons styles
