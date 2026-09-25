@@ -3,6 +3,9 @@ import AppKit
 /// One window in the switcher. Subclasses draw each style.
 class SwitcherCell: NSView {
     let windowInfo: WindowInfo
+    /// Called when the mouse moves over the cell, and when it is clicked.
+    var onHover: (() -> Void)?
+    var onClick: (() -> Void)?
 
     var isSelected = false {
         didSet { updateAppearance() }
@@ -21,6 +24,28 @@ class SwitcherCell: NSView {
 
     func updateAppearance() {
         layer?.backgroundColor = isSelected ? cgColor(.controlAccentColor) : nil
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        // Active always: the switcher never becomes the active app.
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+
+    /// Moving the mouse selects; the cell under the mouse when the switcher
+    /// opens is not selected until the mouse moves.
+    override func mouseMoved(with event: NSEvent) {
+        onHover?()
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        onClick?()
     }
 
     /// Layer colors don't follow the theme on their own; resolve them for this view.

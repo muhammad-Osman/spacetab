@@ -146,6 +146,8 @@ enum AppSettings {
         static let hiddenAppWindows = "hiddenAppWindows"
         static let screens = "screens"
         static let excludedApps = "excludedApps"
+        static let groupByApp = "groupByApp"
+        static let showMenuBarIcon = "showMenuBarIcon"
         static let theme = "theme"
         static let size = "size"
         static let spacing = "spacing"
@@ -158,6 +160,8 @@ enum AppSettings {
     static let defaultMinimizedWindows = WindowPlacement.atEnd
     static let defaultHiddenAppWindows = WindowPlacement.atEnd
     static let defaultScreens = ScreenChoice.all
+    static let defaultGroupByApp = false
+    static let defaultShowMenuBarIcon = true
     static let defaultTheme = Theme.system
     static let defaultSize = SwitcherSize.medium
     static let defaultSpacing = SwitcherSpacing.normal
@@ -180,6 +184,15 @@ enum AppSettings {
 
     static var screens: ScreenChoice {
         read(Key.screens) ?? defaultScreens
+    }
+
+    /// Whether windows of the same app are listed together.
+    static var groupByApp: Bool {
+        UserDefaults.standard.object(forKey: Key.groupByApp) as? Bool ?? defaultGroupByApp
+    }
+
+    static var showMenuBarIcon: Bool {
+        UserDefaults.standard.object(forKey: Key.showMenuBarIcon) as? Bool ?? defaultShowMenuBarIcon
     }
 
     /// Bundle IDs of apps whose windows never appear in the switcher.
@@ -228,6 +241,8 @@ struct ListingOptions: Sendable {
     var minimizedWindows: WindowPlacement
     var hiddenAppWindows: WindowPlacement
     var excludedBundleIDs: Set<String> = []
+    /// Whether windows of the same app are listed together.
+    var groupByApp = false
     /// Screen frames in CoreGraphics coordinates (origin at the top left of
     /// the main display).
     var screens: [CGRect] = []
@@ -272,6 +287,7 @@ struct ListingOptions: Sendable {
             minimizedWindows: AppSettings.minimizedWindows,
             hiddenAppWindows: AppSettings.hiddenAppWindows,
             excludedBundleIDs: AppSettings.excludedBundleIDs,
+            groupByApp: AppSettings.groupByApp,
             screens: screens,
             onlyScreen: AppSettings.screens == .withMouse ? mouseScreen : nil,
             allDesktops: scope != .currentDesktop,

@@ -25,6 +25,10 @@ struct SettingsView: View {
     private var screens = AppSettings.defaultScreens
     @AppStorage(AppSettings.Key.excludedApps)
     private var excludedApps = ""
+    @AppStorage(AppSettings.Key.groupByApp)
+    private var groupByApp = AppSettings.defaultGroupByApp
+    @AppStorage(AppSettings.Key.showMenuBarIcon)
+    private var showMenuBarIcon = AppSettings.defaultShowMenuBarIcon
 
     @State private var shortcuts = ShortcutSettings.load()
     @State private var screenRecordingGranted = ScreenRecordingPermission.isGranted
@@ -55,6 +59,9 @@ struct SettingsView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .launchAtLoginChanged)) { _ in
             launchStatus = LaunchAtLogin.status
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .settingsImported)) { _ in
+            shortcuts = ShortcutSettings.load()
         }
     }
 
@@ -130,6 +137,7 @@ struct SettingsView: View {
                 Picker("Show windows from", selection: $screens) {
                     ForEach(ScreenChoice.allCases) { Text($0.title).tag($0) }
                 }
+                Toggle("Group windows by app", isOn: $groupByApp)
             }
             Section("Never show these apps") {
                 let ids = AppSettings.parseExcluded(excludedApps).sorted()
@@ -229,6 +237,21 @@ struct SettingsView: View {
                     Text(launchError)
                         .foregroundStyle(.red)
                 }
+                Toggle("Show menu bar icon", isOn: $showMenuBarIcon)
+                if !showMenuBarIcon {
+                    Text("To open Settings without the icon, open SpaceTab again from Applications or Spotlight.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Section {
+                HStack {
+                    Button("Export Settings…") { SettingsTransfer.exportWithPanel() }
+                    Button("Import Settings…") { SettingsTransfer.importWithPanel() }
+                }
+            } footer: {
+                Text("Move your settings and shortcuts to another Mac.")
+                    .foregroundStyle(.secondary)
             }
             Section("Keys in the switcher") {
                 keyRow("/", "Search windows, then Return to switch")

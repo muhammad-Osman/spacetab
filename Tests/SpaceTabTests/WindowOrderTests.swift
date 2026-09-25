@@ -115,4 +115,18 @@ final class WindowOrderTests: XCTestCase {
         )
         XCTAssertFalse(list.firstIsCurrent, "the quick flip must go to S, the newest window on this screen")
     }
+
+    func testGroupingKeepsAppsInOrderOfTheirMostRecentWindow() {
+        let windows = [window(1, pid: 10), window(2, pid: 20), window(3, pid: 10), window(4, pid: 30), window(5, pid: 20)]
+        XCTAssertEqual(WindowLister.grouped(windows).map(\.id), [1, 3, 2, 5, 4])
+    }
+
+    func testGroupingDoesNotPullMinimizedWindowsForward() {
+        let windows = [window(1, pid: 10), window(2, pid: 20), window(3, pid: 10, state: .minimized)]
+        let list = WindowLister.order(
+            windows, ranks: [1: 0, 2: 1, 3: 2], focusedID: 1, frontmostPID: 10, pendingSwitch: nil,
+            atEnd: [.minimized], groupByApp: true
+        )
+        XCTAssertEqual(ids(list), [1, 2, 3])
+    }
 }

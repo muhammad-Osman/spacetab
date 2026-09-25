@@ -72,6 +72,13 @@ final class SwitcherController {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.shortcuts = ShortcutSettings.load() }
         }
+        panel.onHover = { [weak self] index in
+            self?.select(index)
+        }
+        panel.onClick = { [weak self] index in
+            self?.select(index)
+            self?.commit()
+        }
         keyHold.onSystemShortcut = { [weak self] in
             // Whatever the shortcut opened is what you use now; stop
             // re-focusing the window you switched to.
@@ -444,6 +451,22 @@ final class SwitcherController {
             windows = list.windows
             phase = .open(selection)
             showPanel()
+        }
+    }
+
+    /// Selects the window at `index` in the shown list.
+    private func select(_ index: Int) {
+        switch phase {
+        case .open(let selection):
+            guard selection.index != index, listedWindows.indices.contains(index) else { return }
+            phase = .open(SwitcherSelection(count: selection.count, index: index))
+            panel.select(index)
+        case .searching(let query, let selection):
+            guard selection.index != index, listedWindows.indices.contains(index) else { return }
+            phase = .searching(query: query, selection: SwitcherSelection(count: selection.count, index: index))
+            panel.select(index)
+        case .idle, .loading:
+            break
         }
     }
 

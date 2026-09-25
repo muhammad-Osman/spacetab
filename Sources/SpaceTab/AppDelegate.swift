@@ -36,6 +36,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+        statusItem.isVisible = AppSettings.showMenuBarIcon
+        NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.statusItem.isVisible = AppSettings.showMenuBarIcon }
+        }
         // Not shown, since SpaceTab has no menu bar of its own, but gives the
         // Settings window ⌘W.
         NSApp.mainMenu = Self.makeMainMenu()
@@ -54,6 +60,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !startIfPermitted() {
             waitForPermission()
         }
+    }
+
+    /// Opening SpaceTab while it runs shows Settings. That is the way in when
+    /// the menu bar icon is hidden.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        settingsWindow.show()
+        return false
     }
 
     // MARK: - Permission

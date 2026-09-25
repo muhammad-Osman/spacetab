@@ -166,7 +166,8 @@ final class WindowLister: @unchecked Sendable {
             frontmostPID: frontmostPID,
             pendingSwitch: pendingSwitch,
             focusedElsewhere: focusedElsewhere,
-            atEnd: atEnd
+            atEnd: atEnd,
+            groupByApp: options.groupByApp
         )
     }
 
@@ -274,7 +275,8 @@ final class WindowLister: @unchecked Sendable {
         frontmostPID: pid_t?,
         pendingSwitch: PendingSwitch?,
         focusedElsewhere: Bool = false,
-        atEnd: Set<WindowInfo.State> = []
+        atEnd: Set<WindowInfo.State> = [],
+        groupByApp: Bool = false
     ) -> WindowList {
         var sortKeys = [(rank: Int, isKnown: Bool, offset: Int)](repeating: (0, false, 0), count: windows.count)
         // Only windows on screen have a place in front-to-back order, so only
@@ -303,6 +305,11 @@ final class WindowLister: @unchecked Sendable {
             // Stable: both groups keep their most recently used order.
             ordered = ordered.filter { !atEnd.contains($0.state) } + ordered.filter { atEnd.contains($0.state) }
         }
+        if groupByApp {
+            let front = ordered.filter { !atEnd.contains($0.state) }
+            let back = ordered.filter { atEnd.contains($0.state) }
+            ordered = grouped(front) + grouped(back)
+        }
 
         if let pendingSwitch, pendingSwitch.pid != frontmostPID {
             // You are still on the way to that window: treat it as current.
@@ -316,6 +323,16 @@ final class WindowLister: @unchecked Sendable {
             windows: ordered,
             firstIsCurrent: !focusedElsewhere && frontmostPID != nil && ordered.first?.pid == frontmostPID
         )
+    }
+
+    /// Windows of the same app next to each other. Apps keep the order of
+    /// their most recently used window, and windows keep their order within the app.
+    static func grouped(_ windows: [WindowInfo]) -> [WindowInfo] {
+        var pids: [pid_t] = []
+        for window in windows where !pids.contains(window.pid) {
+            pids.append(window.pid)
+        }
+        return pids.flatMap { pid in windows.filter { $0.pid == pid } }
     }
 
     /// Whether a window the app reports to Accessibility belongs in the switcher.

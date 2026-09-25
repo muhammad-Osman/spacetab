@@ -13,6 +13,10 @@ final class SwitcherPanel: NSPanel {
     private static let searchBarHeight: CGFloat = 34
     private static let minWidthWithBar: CGFloat = 360
 
+    /// Called with the index of the cell the mouse moved over, or clicked.
+    var onHover: ((Int) -> Void)?
+    var onClick: ((Int) -> Void)?
+
     private let thumbnails = ThumbnailStore()
     private let background = NSVisualEffectView()
     private let tint = NSView()
@@ -38,6 +42,7 @@ final class SwitcherPanel: NSPanel {
         hasShadow = true
         hidesOnDeactivate = false
         animationBehavior = .none
+        acceptsMouseMovedEvents = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
 
         background.material = .hudWindow
@@ -119,6 +124,10 @@ final class SwitcherPanel: NSPanel {
             )
         }
         cells = layout.cells
+        for (index, cell) in cells.enumerated() {
+            cell.onHover = { [weak self] in self?.onHover?(index) }
+            cell.onClick = { [weak self] in self?.onClick?(index) }
+        }
 
         let document = FlippedView(frame: NSRect(origin: .zero, size: layout.contentSize))
         cells.forEach(document.addSubview)

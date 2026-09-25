@@ -113,18 +113,18 @@ enum ShortcutSettings {
     /// Posted after the shortcuts change.
     static let changed = Notification.Name("SpaceTabShortcutsChanged")
 
-    static func load() -> [Shortcut] {
+    static func load(from defaults: UserDefaults = .standard) -> [Shortcut] {
         guard
-            let data = UserDefaults.standard.data(forKey: key),
+            let data = defaults.data(forKey: key),
             let shortcuts = try? JSONDecoder().decode([Shortcut].self, from: data)
         else { return Shortcut.defaults }
         return shortcuts
     }
 
-    static func save(_ shortcuts: [Shortcut]) {
+    static func save(_ shortcuts: [Shortcut], to defaults: UserDefaults = .standard) {
         let kept = Array(shortcuts.prefix(Shortcut.maxCount))
         if let data = try? JSONEncoder().encode(kept) {
-            UserDefaults.standard.set(data, forKey: key)
+            defaults.set(data, forKey: key)
         }
         NotificationCenter.default.post(name: changed, object: nil)
     }
