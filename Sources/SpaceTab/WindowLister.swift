@@ -51,13 +51,14 @@ final class WindowLister: @unchecked Sendable {
         return nil
     }
 
-    /// Windows on the current desktop, most recently used first.
+    /// Windows on the current desktop (or on all desktops, when the options
+    /// say so), most recently used first.
     ///
     /// On-screen windows are exactly the ones on the desktop you are looking at.
-    /// Minimized windows and windows of hidden apps are off screen, so their
-    /// desktop is looked up with private Spaces APIs. CoreGraphics gives the
-    /// list. Titles come from the Accessibility API, because CoreGraphics only
-    /// reports titles with Screen Recording permission.
+    /// Minimized windows, windows of hidden apps and windows on other desktops
+    /// are off screen, so their desktop is looked up with private Spaces APIs.
+    /// CoreGraphics gives the list. Titles come from the Accessibility API,
+    /// because CoreGraphics only reports titles with Screen Recording permission.
     func windowsOnCurrentDesktop(
         ranks: [CGWindowID: Int],
         frontmostPID: pid_t?,
@@ -67,6 +68,8 @@ final class WindowLister: @unchecked Sendable {
         var lookups: [pid_t: Lookup] = [:]
         var fresh: [pid_t: [CGWindowID: CachedWindow]] = [:]
         var rejected: [pid_t: Set<CGWindowID>] = [:]
+        /// Windows an answering app was asked about, accepted or not.
+        var examined: [pid_t: Set<CGWindowID>] = [:]
         var windows: [WindowInfo] = []
 
         let onScreen = Self.onScreenEntries()
@@ -80,6 +83,7 @@ final class WindowLister: @unchecked Sendable {
             var title = ""
             var resolved = false
             if case let .answered(axWindows) = lookup {
+                examined[pid, default: []].insert(id)
                 guard let found = axWindows[id] else {
                     // Windows the app doesn't report to Accessibility are
                     // overlays, tooltips and the like, not real windows.
@@ -125,12 +129,12 @@ final class WindowLister: @unchecked Sendable {
             ))
         }
 
-        if options.minimizedWindows != .hidden || options.hiddenAppWindows != .hidden {
+        if options.allDesktops || options.minimizedWindows != .hidden || options.hiddenAppWindows != .hidden {
             let onScreenIDs = Set(onScreen.compactMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value })
             windows += offScreenWindows(excluding: onScreenIDs, options: options, lookups: &lookups)
         }
 
-        updateCache(lookups: lookups, fresh: fresh, rejected: rejected)
+        updateCache(lookups: lookups, fresh: fresh, rejected: rejected, examined: examined)
 
         var focusedID: CGWindowID?
         if let frontmostPID, case .answered = lookups[frontmostPID] {
@@ -166,7 +170,8 @@ final class WindowLister: @unchecked Sendable {
         )
     }
 
-    /// Minimized windows and windows of hidden apps on the current desktop.
+    /// Minimized windows and windows of hidden apps on the current desktop,
+    /// and windows on other desktops when asked for.
     private func offScreenWindows(
         excluding onScreenIDs: Set<CGWindowID>,
         options: ListingOptions,
@@ -180,13 +185,16 @@ final class WindowLister: @unchecked Sendable {
             guard
                 let (id, pid, bounds, app) = Self.candidate(entry, options: options),
                 !onScreenIDs.contains(id),
-                Self.isLargeEnough(bounds.size),
-                !Spaces.spaceIDs(of: id).isDisjoint(with: currentSpaces)
+                Self.isLargeEnough(bounds.size)
             else { continue }
+            let spaces = Spaces.spaceIDs(of: id)
+            let onCurrentDesktop = !spaces.isDisjoint(with: currentSpaces)
+            // A window on no desktop was closed but kept by its app.
+            guard onCurrentDesktop || (options.allDesktops && !spaces.isEmpty) else { continue }
 
-            // Only minimized windows can be off screen in an app that isn't
-            // hidden. Don't ask apps that can't have any listed.
-            guard app.isHidden || options.minimizedWindows != .hidden else { continue }
+            // On the current desktop, only minimized windows can be off screen
+            // in an app that isn't hidden. Don't ask apps that can't have any listed.
+            guard options.allDesktops || app.isHidden || options.minimizedWindows != .hidden else { continue }
 
             // Minimized state only comes from Accessibility, so skip busy apps.
             let lookup = lookups[pid] ?? accessibilityWindows(of: pid)
@@ -208,6 +216,8 @@ final class WindowLister: @unchecked Sendable {
             } else if app.isHidden {
                 guard options.hiddenAppWindows != .hidden else { continue }
                 state = .appHidden
+            } else if !onCurrentDesktop {
+                state = .otherDesktop
             } else {
                 // Off screen for another reason, such as a window being set up.
                 continue
@@ -242,7 +252,9 @@ final class WindowLister: @unchecked Sendable {
             let bounds = CGRect(dictionaryRepresentation: boundsDictionary as CFDictionary),
             options.includes(bounds),
             let app = NSRunningApplication(processIdentifier: pid),
-            app.activationPolicy != .prohibited
+            app.activationPolicy != .prohibited,
+            options.onlyPID.map({ $0 == pid }) ?? true,
+            !options.excludedBundleIDs.contains(app.bundleIdentifier ?? "")
         else { return nil }
         return (id, pid, bounds, app)
     }
@@ -269,7 +281,7 @@ final class WindowLister: @unchecked Sendable {
         // they pass their rank to unknown windows in front of them.
         var rankBehind = Int.max
         for offset in windows.indices.reversed() {
-            let isOnScreen = windows[offset].state == .normal
+            let isOnScreen = windows[offset].isOnScreen
             if let rank = ranks[windows[offset].id] {
                 sortKeys[offset] = (rank, true, offset)
                 if isOnScreen {
@@ -347,7 +359,8 @@ final class WindowLister: @unchecked Sendable {
     private func updateCache(
         lookups: [pid_t: Lookup],
         fresh: [pid_t: [CGWindowID: CachedWindow]],
-        rejected: [pid_t: Set<CGWindowID>]
+        rejected: [pid_t: Set<CGWindowID>],
+        examined: [pid_t: Set<CGWindowID>]
     ) {
         for (pid, lookup) in lookups {
             guard case .answered = lookup else { continue }
@@ -357,7 +370,11 @@ final class WindowLister: @unchecked Sendable {
                 cache[id] = nil
             }
             lastKnown[pid] = cache
-            lastRejected[pid] = rejected[pid] ?? []
+            // Windows on other screens or desktops weren't looked at this
+            // time, so what was known about them stays.
+            lastRejected[pid] = (lastRejected[pid] ?? [])
+                .subtracting(examined[pid] ?? [])
+                .union(rejected[pid] ?? [])
         }
 
         let allIDs = Set(
@@ -368,6 +385,9 @@ final class WindowLister: @unchecked Sendable {
             let existing = windows.filter { allIDs.contains($0.key) }
             return existing.isEmpty ? nil : existing
         }
-        lastRejected = lastRejected.filter { NSRunningApplication(processIdentifier: $0.key) != nil }
+        lastRejected = lastRejected.compactMapValues { ids in
+            let existing = ids.intersection(allIDs)
+            return existing.isEmpty ? nil : existing
+        }
     }
 }

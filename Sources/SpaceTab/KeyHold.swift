@@ -1,9 +1,11 @@
+import AppKit
 import Carbon.HIToolbox
 import CoreGraphics
 import Foundation
 
-/// Keys typed after ⌥ was released but before the switch finished. They are
-/// replayed to the new window, so ⌥ Tab then ⌘W closes the right one.
+/// Keys typed after the shortcut's modifiers were released but before the
+/// switch finished. They are replayed to the new window, so ⌥ Tab then ⌘W
+/// closes the right one.
 @MainActor
 final class KeyHold {
     /// Marks replayed key events, so the event tap lets them through.
@@ -12,6 +14,10 @@ final class KeyHold {
     /// How long to hold keys before giving them to whatever app is in front.
     private static let timeout: TimeInterval = 1.5
     private static let secureInputCheckInterval: TimeInterval = 0.015
+
+    /// Called when a system shortcut (such as ⌘ Space) ended the hold: the
+    /// keys typed from now on belong to whatever the shortcut opened.
+    var onSystemShortcut: (() -> Void)?
 
     /// Nil when not holding.
     private var events: [CGEvent]?
@@ -25,14 +31,12 @@ final class KeyHold {
     /// Bumped each time holding starts or is extended, so only the latest timeout fires.
     private var holdCount = 0
     private var secureInputTimer: Timer?
+    private var activationToken: NSObjectProtocol?
 
     var isHolding: Bool { events != nil }
 
     /// Starts holding keys, or keeps holding them for the next step of the switch.
     func start(target: pid_t? = nil) {
-        if let target {
-            self.target = target
-        }
         if events == nil {
             // Secure input hides key presses from the event tap, so holding
             // would only put the keys it does see out of order.
@@ -48,12 +52,35 @@ final class KeyHold {
                 }
             }
         }
+        if let target {
+            self.target = target
+        }
 
         holdCount += 1
         let holdCount = self.holdCount
+        // Never hold the keyboard for long, whatever happens to the switch.
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.timeout) { [weak self] in
             guard let self, self.holdCount == holdCount else { return }
             self.release(to: nil)
+        }
+    }
+
+    /// Keeps holding until the app comes to the front, then releases the keys
+    /// to it. For a switch that was only requested from macOS, for example
+    /// because the app was busy. The timeout still applies.
+    func releaseWhenActivated(_ pid: pid_t) {
+        guard isHolding else { return }
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+            release(to: pid)
+            return
+        }
+        stopWaitingForActivation()
+        activationToken = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.processIdentifier == pid else { return }
+            MainActor.assumeIsolated { self?.release(to: pid) }
         }
     }
 
@@ -91,11 +118,15 @@ final class KeyHold {
             return true
         }
 
-        guard
-            !systemShortcuts.contains(SystemShortcut(keyCode: keyCode, flags: event.flags)),
-            (events?.count ?? 0) < Self.maxEvents
-        else {
-            // System shortcuts only work as real key presses, not replayed ones.
+        if systemShortcuts.contains(SystemShortcut(keyCode: keyCode, flags: event.flags)) {
+            // System shortcuts only work as real key presses, not replayed
+            // ones. Whatever it opens gets the keys typed after it, so the
+            // hold ends here and the held keys go out first.
+            release(to: nil)
+            onSystemShortcut?()
+            return false
+        }
+        guard (events?.count ?? 0) < Self.maxEvents else {
             passedThrough.insert(keyCode)
             return false
         }
@@ -107,11 +138,12 @@ final class KeyHold {
 
     /// Replays held keys: to the app with `pid`, or to whatever app is in front when nil.
     func release(to pid: pid_t?) {
+        target = nil
+        stopWaitingForActivation()
         guard let events else { return }
         self.events = nil
         heldDown = []
         passedThrough = []
-        target = nil
         secureInputTimer?.invalidate()
         secureInputTimer = nil
         for event in events {
@@ -124,6 +156,13 @@ final class KeyHold {
         }
     }
 
+    private func stopWaitingForActivation() {
+        if let activationToken {
+            NSWorkspace.shared.notificationCenter.removeObserver(activationToken)
+        }
+        activationToken = nil
+    }
+
     private func append(_ event: CGEvent) {
         if let copy = event.copy() {
             events?.append(copy)
@@ -132,13 +171,16 @@ final class KeyHold {
 }
 
 /// A macOS keyboard shortcut from System Settings > Keyboard > Keyboard
-/// Shortcuts, such as ⌘Space for Spotlight or ⌃Space for input sources.
+/// Shortcuts, such as ⌘ Space for Spotlight or ⌃ Space for input sources.
 struct SystemShortcut: Hashable {
     let keyCode: Int64
-    /// Carbon modifier flags.
+    /// Carbon modifier flags, including the Fn (Globe) key.
     let modifiers: UInt32
 
-    private static let modifierMask = UInt32(cmdKey | shiftKey | optionKey | controlKey)
+    private static let fnModifier = UInt32(kEventKeyModifierFnMask)
+    private static let modifierMask = UInt32(cmdKey | shiftKey | optionKey | controlKey) | fnModifier
+    /// Keys whose events always carry the Fn flag, whether or not Fn is held.
+    private static let navigationKeys: Set<Int64> = [123, 124, 125, 126, 115, 116, 117, 119, 121, 114]
 
     init(keyCode: Int64, modifiers: UInt32) {
         self.keyCode = keyCode
@@ -151,7 +193,15 @@ struct SystemShortcut: Hashable {
         if flags.contains(.maskShift) { modifiers |= UInt32(shiftKey) }
         if flags.contains(.maskAlternate) { modifiers |= UInt32(optionKey) }
         if flags.contains(.maskControl) { modifiers |= UInt32(controlKey) }
+        if flags.contains(.maskSecondaryFn) { modifiers |= Self.fnModifier }
         self.init(keyCode: keyCode, modifiers: modifiers)
+    }
+
+    /// Whether a shortcut from the system list can be told apart from a
+    /// plain key press. Arrow and navigation key events always carry the Fn
+    /// flag, so a Globe + arrow shortcut would match every arrow press.
+    var isDistinguishable: Bool {
+        !(modifiers == Self.fnModifier && Self.navigationKeys.contains(keyCode))
     }
 
     static func enabled() -> Set<SystemShortcut> {
@@ -160,13 +210,14 @@ struct SystemShortcut: Hashable {
             CopySymbolicHotKeys(&list) == noErr,
             let hotKeys = list?.takeRetainedValue() as? [[String: Any]]
         else { return [] }
-        return Set(hotKeys.compactMap { hotKey in
+        return Set(hotKeys.compactMap { hotKey -> SystemShortcut? in
             guard
                 (hotKey[kHISymbolicHotKeyEnabled as String] as? Bool) == true,
                 let code = (hotKey[kHISymbolicHotKeyCode as String] as? NSNumber)?.int64Value,
                 let modifiers = (hotKey[kHISymbolicHotKeyModifiers as String] as? NSNumber)?.uint32Value
             else { return nil }
-            return SystemShortcut(keyCode: code, modifiers: modifiers)
+            let shortcut = SystemShortcut(keyCode: code, modifiers: modifiers)
+            return shortcut.isDistinguishable ? shortcut : nil
         })
     }
 }

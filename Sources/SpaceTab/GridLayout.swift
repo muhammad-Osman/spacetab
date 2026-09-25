@@ -40,7 +40,8 @@ struct GridLayout: Equatable {
         maxCellWidth: CGFloat
     ) -> GridLayout {
         func cell(_ width: CGFloat) -> CGSize {
-            CGSize(width: width, height: (width * aspectRatio + extraHeight).rounded())
+            // Whole points, rounded down, so a grid that fits never scrolls by a fraction.
+            CGSize(width: width, height: (width * aspectRatio + extraHeight).rounded(.down))
         }
         guard count > 0 else {
             return GridLayout(count: 0, columns: 0, cellSize: cell(maxCellWidth), spacing: spacing)

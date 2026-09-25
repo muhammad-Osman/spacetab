@@ -19,9 +19,17 @@ final class WindowActivator: @unchecked Sendable {
     /// Bumped for each switch, so checks for an older switch stop. Only used on `queue`.
     private var latest = 0
 
+    /// Stops the focus checks of the current switch, for example when the
+    /// user has moved on to something else.
+    func cancelChecks() {
+        queue.async {
+            self.latest += 1
+        }
+    }
+
     /// Switches to the window. `done` runs on the main thread once the window
     /// has focus or SpaceTab has done what it can. Its argument is false when
-    /// the app didn't answer, so the window may not be in front.
+    /// the window is not in front, for example because the app didn't answer.
     func activate(_ window: WindowInfo, done: @escaping @MainActor (Bool) -> Void) {
         queue.async {
             self.latest += 1
@@ -101,7 +109,7 @@ final class WindowActivator: @unchecked Sendable {
                 Self.focus(element)
             }
             if ready || isLast {
-                DispatchQueue.main.async { done(true) }
+                DispatchQueue.main.async { done(ready) }
             } else {
                 self.check(window, element: element, token: token, attempt: attempt + 1, delays: delays, done: done)
             }

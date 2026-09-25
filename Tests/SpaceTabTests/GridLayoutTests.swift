@@ -45,4 +45,13 @@ final class GridLayoutTests: XCTestCase {
         XCTAssertEqual(layout.frame(ofCell: 1).minX, 100)
         XCTAssertEqual(layout.frame(ofCell: 2), CGRect(x: 50, y: 100, width: 100, height: 100))
     }
+
+    func testFittedGridUsesWholePointsAndNeverScrollsByAFraction() {
+        // A 1710x1073 laptop screen after padding, with 29 windows.
+        let available = CGSize(width: 1515, height: 834)
+        let layout = thumbnails(29, in: available)
+        XCTAssertEqual(layout.cellSize.height, layout.cellSize.height.rounded(.down))
+        XCTAssertLessThanOrEqual(layout.contentSize.height, available.height)
+        XCTAssertLessThanOrEqual(layout.contentSize.width, available.width)
+    }
 }

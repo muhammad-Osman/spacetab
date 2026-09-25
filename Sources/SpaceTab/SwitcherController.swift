@@ -3,6 +3,9 @@ import AppKit
 private enum KeyCode {
     static let tab: Int64 = 48
     static let escape: Int64 = 53
+    static let delete: Int64 = 51
+    static let `return`: Int64 = 36
+    static let enter: Int64 = 76
     static let left: Int64 = 123
     static let right: Int64 = 124
     static let down: Int64 = 125
@@ -22,6 +25,9 @@ final class SwitcherController {
         /// presses and the ⌥ release are recorded and applied when it arrives.
         case loading(backwards: Bool, moves: Int, released: Bool)
         case open(SwitcherSelection)
+        /// Typing filters the list. The switcher stays open without ⌥, and
+        /// Return switches.
+        case searching(query: String, selection: SwitcherSelection)
     }
 
     /// How long to wait for the window list after ⌥ was released before giving up.
@@ -33,9 +39,20 @@ final class SwitcherController {
     private let activator = WindowActivator()
     private let keyHold = KeyHold()
     private let listingQueue = DispatchQueue(label: "SpaceTab.listing", qos: .userInteractive)
+    private let actionQueue = DispatchQueue(label: "SpaceTab.actions", qos: .userInteractive)
 
     private var phase = Phase.idle
+    private var shortcuts = ShortcutSettings.load()
+    private var shortcutsToken: NSObjectProtocol?
+    /// The shortcut that opened the switcher. Letting go of its modifiers switches.
+    private var activeShortcut: Shortcut?
+    /// All listed windows, and the ones matching the search.
     private var windows: [WindowInfo] = []
+    private var matching: [WindowInfo] = []
+    private var options = ListingOptions(minimizedWindows: .atEnd, hiddenAppWindows: .atEnd)
+    private var appearance = SwitcherAppearance()
+    /// The screen the switcher opens on: the one with the mouse when ⌥ Tab was pressed.
+    private var screen: NSScreen?
     /// Bumped on every open and cancel, so a window list that arrives late is ignored.
     private var generation = 0
     /// The app in front when the switcher opened, and the app of a switch
@@ -50,6 +67,18 @@ final class SwitcherController {
 
     init(history: WindowHistory) {
         self.history = history
+        shortcutsToken = NotificationCenter.default.addObserver(
+            forName: ShortcutSettings.changed, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.shortcuts = ShortcutSettings.load() }
+        }
+        keyHold.onSystemShortcut = { [weak self] in
+            // Whatever the shortcut opened is what you use now; stop
+            // re-focusing the window you switched to.
+            guard let self else { return }
+            self.switchCount += 1
+            self.activator.cancelChecks()
+        }
     }
 
     /// Whether key presses go to the switcher instead of the app in front.
@@ -57,13 +86,18 @@ final class SwitcherController {
         switch phase {
         case .idle: false
         case .loading(_, _, let released): !released
-        case .open: true
+        case .open, .searching: true
         }
+    }
+
+    private var isSearching: Bool {
+        if case .searching = phase { return true }
+        return false
     }
 
     /// Handles one keyboard event. Returns `true` to swallow it.
     func handle(_ type: CGEventType, _ event: CGEvent) -> Bool {
-        if event.getIntegerValueField(.eventSourceUserData) == KeyHold.replayTag {
+        if event.getIntegerValueField(.eventSourceUserData) == KeyHold.replayTag || ShortcutSettings.isRecording {
             return false
         }
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
@@ -71,15 +105,15 @@ final class SwitcherController {
 
         switch type {
         case .flagsChanged:
-            if !flags.contains(.maskAlternate) {
-                optionReleased()
+            if let activeShortcut, !activeShortcut.isHeld(in: flags) {
+                modifiersReleased()
             }
             return false
 
         case .keyDown, .keyUp:
             if keyHold.isHolding {
                 let isKeyDown = type == .keyDown
-                if isKeyDown, keyCode == KeyCode.tab, isSwitcherShortcut(flags) {
+                if isKeyDown, shortcut(matching: keyCode, flags: flags) != nil {
                     // A new switch: the keys held so far belong to the app in front.
                     keyHold.release(to: nil)
                 } else if isKeyDown, keyCode == KeyCode.escape, case .loading = phase {
@@ -120,7 +154,8 @@ final class SwitcherController {
         swallowedKeys.removeAll()
         // Keys typed while the tap was off already went through; send the held ones too.
         keyHold.release(to: nil)
-        if isCapturingKeys, !CGEventSource.flagsState(.combinedSessionState).contains(.maskAlternate) {
+        if isCapturingKeys, !isSearching, let activeShortcut,
+           !activeShortcut.isHeld(in: CGEventSource.flagsState(.combinedSessionState)) {
             cancel()
         }
     }
@@ -133,22 +168,25 @@ final class SwitcherController {
             // A new press means the earlier release happened where the tap couldn't see it.
             swallowedKeys.remove(keyCode)
         }
-        if isCapturingKeys, !flags.contains(.maskAlternate) {
-            // The ⌥ release was missed, for example while macOS had the tap
-            // turned off. Give the keyboard back instead of eating keys.
+        if isCapturingKeys, !isSearching, let activeShortcut, !activeShortcut.isHeld(in: flags) {
+            // The modifier release was missed, for example while macOS had the
+            // tap turned off. Give the keyboard back instead of eating keys.
             cancel()
         }
         if isRepeat, !swallowedKeys.contains(keyCode) {
             // A key held down in an app keeps going to that app, even if ⌥ is added.
             return false
         }
-        if keyCode == KeyCode.tab, isSwitcherShortcut(flags) {
+        if let shortcut = shortcut(matching: keyCode, flags: flags) {
             swallowedKeys.insert(keyCode)
             let backwards = flags.contains(.maskShift)
             if isCapturingKeys {
-                move(by: backwards ? -1 : 1)
+                // While open, only the shortcut that opened the switcher moves.
+                if shortcut.id == activeShortcut?.id {
+                    move(by: backwards ? -1 : 1)
+                }
             } else {
-                open(backwards: backwards)
+                open(shortcut, backwards: backwards)
             }
             return true
         }
@@ -157,42 +195,212 @@ final class SwitcherController {
             return isRepeat
         }
         swallowedKeys.insert(keyCode)
-        switch keyCode {
-        case KeyCode.left, KeyCode.up: move(by: -1)
-        case KeyCode.right, KeyCode.down: move(by: 1)
-        case KeyCode.escape: cancel()
-        default: break
+
+        switch phase {
+        case .idle:
+            break
+        case .loading:
+            handleNavigationKey(keyCode)
+        case .open:
+            if !handleNavigationKey(keyCode), !flags.contains(.maskCommand), !flags.contains(.maskControl),
+               let character = KeyTranslator.character(keyCode: keyCode, shift: flags.contains(.maskShift)) {
+                if character == "/" {
+                    startSearch()
+                } else if let action = WindowAction(character: character) {
+                    perform(action)
+                }
+            }
+        case .searching(let query, _):
+            handleSearchKey(keyCode, flags: flags, query: query)
         }
         return true
+    }
+
+    /// Arrow keys and Esc, which work the same whenever the switcher is open.
+    @discardableResult
+    private func handleNavigationKey(_ keyCode: Int64) -> Bool {
+        switch keyCode {
+        case KeyCode.left: move(by: -1)
+        case KeyCode.right: move(by: 1)
+        case KeyCode.up: moveRow(by: -1)
+        case KeyCode.down: moveRow(by: 1)
+        case KeyCode.escape: cancel()
+        default: return false
+        }
+        return true
+    }
+
+    /// Up and down go to the cell above or below in the grid styles. In a
+    /// list, that is the previous or next window.
+    private func moveRow(by delta: Int) {
+        switch phase {
+        case .idle:
+            break
+        case .loading:
+            move(by: delta)
+        case .open, .searching:
+            let target = panel.index(from: currentIndex, rowDelta: delta)
+            move(by: target - currentIndex)
+        }
+    }
+
+    private func handleSearchKey(_ keyCode: Int64, flags: CGEventFlags, query: String) {
+        switch keyCode {
+        case KeyCode.tab:
+            move(by: flags.contains(.maskShift) ? -1 : 1)
+        case KeyCode.return, KeyCode.enter:
+            commit()
+        case KeyCode.delete:
+            setQuery(String(query.dropLast()))
+        default:
+            if handleNavigationKey(keyCode) { return }
+            guard
+                !flags.contains(.maskCommand), !flags.contains(.maskControl),
+                let character = KeyTranslator.character(keyCode: keyCode, shift: flags.contains(.maskShift))
+            else { return }
+            setQuery(query + character)
+        }
     }
 
     private func handleKeyUp(keyCode: Int64, flags: CGEventFlags) -> Bool {
         if swallowedKeys.remove(keyCode) != nil {
             return true
         }
-        if isCapturingKeys, !flags.contains(.maskAlternate) {
+        if isCapturingKeys, !isSearching, !flags.contains(.maskAlternate) {
             cancel()
         }
         return false
     }
 
-    private func isSwitcherShortcut(_ flags: CGEventFlags) -> Bool {
-        flags.contains(.maskAlternate) && !flags.contains(.maskCommand) && !flags.contains(.maskControl)
+    private func shortcut(matching keyCode: Int64, flags: CGEventFlags) -> Shortcut? {
+        shortcuts.first { $0.matches(keyCode: keyCode, flags: flags) }
+    }
+
+    // MARK: - Search and actions
+
+    private func startSearch() {
+        guard case .open = phase else { return }
+        matching = windows
+        phase = .searching(query: "", selection: SwitcherSelection(count: matching.count, index: 0))
+        showPanel()
+    }
+
+    private func setQuery(_ query: String) {
+        guard case .searching = phase else { return }
+        matching = WindowSearch.filter(windows, query: query)
+        phase = .searching(query: query, selection: SwitcherSelection(count: matching.count, index: 0))
+        showPanel()
+    }
+
+    /// Runs the action on the selected window, and updates the list to match
+    /// without asking every app again.
+    private func perform(_ action: WindowAction) {
+        guard let window = selectedWindow else { return }
+        actionQueue.async {
+            action.perform(on: window)
+        }
+
+        func placement(_ state: WindowInfo.State) -> WindowPlacement {
+            state == .minimized ? options.minimizedWindows : options.hiddenAppWindows
+        }
+        switch action {
+        case .close:
+            windows.removeAll { $0.id == window.id }
+        case .quitApp:
+            windows.removeAll { $0.pid == window.pid }
+        case .minimize:
+            toggleState(.minimized, placement: placement(.minimized)) { $0.id == window.id }
+        case .hideApp:
+            toggleState(.appHidden, placement: placement(.appHidden)) { $0.pid == window.pid }
+        case .fullScreen:
+            return
+        }
+        if case .searching(let query, _) = phase {
+            matching = WindowSearch.filter(windows, query: query)
+        }
+        guard !listedWindows.isEmpty else {
+            cancel()
+            return
+        }
+        let index = currentIndex
+        switch phase {
+        case .open:
+            phase = .open(SwitcherSelection(count: listedWindows.count, index: index))
+        case .searching(let query, _):
+            phase = .searching(query: query, selection: SwitcherSelection(count: matching.count, index: index))
+        default:
+            return
+        }
+        showPanel()
+    }
+
+    /// Windows matching `matches` become `state`, or normal again if they were.
+    private func toggleState(_ state: WindowInfo.State, placement: WindowPlacement, matches: (WindowInfo) -> Bool) {
+        let restoring = windows.first(where: matches)?.state == state
+        let newState: WindowInfo.State = restoring ? .normal : state
+        if !restoring, placement == .hidden {
+            windows.removeAll(where: matches)
+            return
+        }
+        var changed: [WindowInfo] = []
+        windows = windows.compactMap { window in
+            guard matches(window) else { return window }
+            var window = window
+            window.state = newState
+            if !restoring, placement == .atEnd {
+                changed.append(window)
+                return nil
+            }
+            return window
+        }
+        windows += changed
+    }
+
+    private var listedWindows: [WindowInfo] {
+        isSearching ? matching : windows
+    }
+
+    private var currentIndex: Int {
+        switch phase {
+        case .open(let selection), .searching(_, let selection): selection.index
+        default: 0
+        }
+    }
+
+    private var selectedWindow: WindowInfo? {
+        let listed = listedWindows
+        return listed.indices.contains(currentIndex) ? listed[currentIndex] : nil
+    }
+
+    private func showPanel() {
+        let search: String? = if case .searching(let query, _) = phase { query } else { nil }
+        panel.show(
+            listedWindows,
+            selectedIndex: currentIndex,
+            style: AppSettings.style,
+            search: search,
+            appearance: appearance,
+            on: screen
+        )
     }
 
     // MARK: - Switching
 
-    private func open(backwards: Bool) {
+    private func open(_ shortcut: Shortcut, backwards: Bool) {
         generation += 1
         // An earlier switch still on its way must not release keys held for this one.
         switchCount += 1
         let generation = self.generation
+        activeShortcut = shortcut
         phase = .loading(backwards: backwards, moves: 0, released: false)
 
         let ranks = history.ranks()
         let pendingSwitch = history.pendingSwitch()
-        let options = ListingOptions.current()
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        options = ListingOptions.current(scope: shortcut.scope, frontmostPID: frontmostPID)
+        appearance = AppSettings.appearance
+        screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
+        let options = self.options
         openedFromPIDs = Set([frontmostPID, pendingSwitch?.pid].compactMap { $0 })
         let lister = self.lister
         listingQueue.async {
@@ -235,7 +443,7 @@ final class SwitcherController {
         } else {
             windows = list.windows
             phase = .open(selection)
-            panel.show(windows, selectedIndex: selection.index, style: AppSettings.style)
+            showPanel()
         }
     }
 
@@ -249,12 +457,16 @@ final class SwitcherController {
             selection.move(by: delta)
             phase = .open(selection)
             panel.select(selection.index)
+        case .searching(let query, var selection):
+            selection.move(by: delta)
+            phase = .searching(query: query, selection: selection)
+            panel.select(selection.index)
         }
     }
 
-    private func optionReleased() {
+    private func modifiersReleased() {
         switch phase {
-        case .idle:
+        case .idle, .searching:
             break
         case let .loading(backwards, moves, released):
             guard !released else { return }
@@ -265,11 +477,19 @@ final class SwitcherController {
                 guard let self, self.generation == generation, case .loading = self.phase else { return }
                 self.cancel()
             }
-        case let .open(selection):
-            let window = windows[selection.index]
-            close()
-            switchTo(window)
+        case .open:
+            commit()
         }
+    }
+
+    /// Switches to the selected window and closes the switcher.
+    private func commit() {
+        guard let window = selectedWindow else {
+            cancel()
+            return
+        }
+        close()
+        switchTo(window)
     }
 
     private func switchTo(_ window: WindowInfo) {
@@ -279,14 +499,21 @@ final class SwitcherController {
         keyHold.start(target: window.pid)
         activator.activate(window) { [weak self] reachedWindow in
             guard let self, self.switchCount == switchCount else { return }
-            // Keys go to the new window only if SpaceTab could bring it forward.
-            self.keyHold.release(to: reachedWindow ? window.pid : nil)
+            if reachedWindow {
+                self.keyHold.release(to: window.pid)
+            } else {
+                // The app hasn't come forward yet (it was busy, or macOS is
+                // still activating it). Keep the keys until it does.
+                self.keyHold.releaseWhenActivated(window.pid)
+            }
         }
     }
 
     private func close() {
         phase = .idle
+        activeShortcut = nil
         windows = []
+        matching = []
         panel.orderOut(nil)
     }
 }

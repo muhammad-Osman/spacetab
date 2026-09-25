@@ -21,6 +21,12 @@ struct SwitcherSelection: Equatable {
         }
     }
 
+    /// A selection at `index`, kept within the list.
+    init(count: Int, index: Int) {
+        self.count = count
+        self.index = count == 0 ? 0 : min(max(index, 0), count - 1)
+    }
+
     mutating func move(by delta: Int) {
         guard count > 0 else { return }
         index = ((index + delta) % count + count) % count

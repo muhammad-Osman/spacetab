@@ -6,6 +6,8 @@ struct WindowInfo {
         case minimized
         /// The window's app is hidden (⌘H).
         case appHidden
+        /// On another desktop (Space). Only listed by shortcuts for all desktops.
+        case otherDesktop
     }
 
     let id: CGWindowID
@@ -21,5 +23,10 @@ struct WindowInfo {
     /// Text to show in the switcher. Falls back to the app name for untitled windows.
     var displayTitle: String {
         title.isEmpty ? appName : title
+    }
+
+    /// Whether the window is visible on the current desktop.
+    var isOnScreen: Bool {
+        state == .normal
     }
 }

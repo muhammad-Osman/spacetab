@@ -40,6 +40,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Settings window ⌘W.
         NSApp.mainMenu = Self.makeMainMenu()
 
+        // Talk to ScreenCaptureKit now and after waking, so any permission
+        // reminder from macOS shows up at a calm moment, not during ⌥ Tab.
+        checkScreenRecording()
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkScreenRecording() }
+        }
+
         // Shows the macOS permission dialog when the permission is missing.
         _ = AccessibilityPermission.isGranted(prompt: true)
         if !startIfPermitted() {
@@ -48,6 +57,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - Permission
+
+    private func checkScreenRecording() {
+        guard AppSettings.style == .thumbnails else { return }
+        Task {
+            await ScreenRecordingPermission.refresh()
+            await ScreenRecordingPermission.warmUp()
+        }
+    }
 
     private func startIfPermitted() -> Bool {
         guard AccessibilityPermission.isGranted(prompt: false), hotKeys.start() else { return false }

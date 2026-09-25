@@ -13,19 +13,23 @@ enum LaunchAtLogin {
         SMAppService.mainApp.status
     }
 
-    /// Already registered counts as success.
+    /// Succeeds when SpaceTab ends up registered, even if macOS reports an
+    /// error because it already was.
     static func enable() throws {
         do {
             try SMAppService.mainApp.register()
-        } catch let error as NSError where error.code == kSMErrorAlreadyRegistered {
+        } catch {
+            guard [.enabled, .requiresApproval].contains(status) else { throw error }
         }
     }
 
-    /// Already removed (for example in System Settings) counts as success.
+    /// Succeeds when SpaceTab ends up unregistered, even if macOS reports an
+    /// error because it already was removed (for example in System Settings).
     static func disable() throws {
         do {
             try SMAppService.mainApp.unregister()
-        } catch let error as NSError where error.code == kSMErrorJobNotFound {
+        } catch {
+            guard [.notRegistered, .notFound].contains(status) else { throw error }
         }
     }
 

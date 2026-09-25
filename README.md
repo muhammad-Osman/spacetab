@@ -110,13 +110,14 @@ SpaceTab does **not** collect data, has **no analytics** and makes **no network 
 |---|---|
 | <kbd>⌥</kbd> + <kbd>Tab</kbd> | Open the switcher / next window |
 | <kbd>⌥</kbd> + <kbd>⇧</kbd> + <kbd>Tab</kbd> | Previous window |
+| <kbd>⌃</kbd> + <kbd>⌥</kbd> + <kbd>Tab</kbd> | Switch between windows on all desktops |
 | <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> | Move the selection |
 | Release <kbd>⌥</kbd> | Switch to the selected window |
 | <kbd>Esc</kbd> | Close without switching |
 | <kbd>/</kbd> | Search windows |
 | <kbd>W</kbd> / <kbd>M</kbd> / <kbd>Q</kbd> / <kbd>F</kbd> / <kbd>H</kbd> | Close window / minimize / quit app / full screen / hide |
 
-All shortcuts can be changed in **Settings → Controls**.
+All shortcuts can be changed in **Settings → Shortcuts**.
 
 ---
 
