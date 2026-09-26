@@ -56,11 +56,9 @@ SpaceTab works like <kbd>Alt</kbd> + <kbd>Tab</kbd> on Ubuntu and Windows, and s
 - **Blacklist apps** so they never appear in the switcher.
 - **Launch at login.**
 - **Menu bar icon**, which you can hide.
-
-### Planned for later
 - **Import and export settings** to move them to another Mac.
 - **Group windows by app.**
-- **Translations.**
+- **Languages:** English, German, French, Spanish, Portuguese, Japanese and Chinese. The translations were not written by native speakers yet; corrections and new languages are welcome in `Resources/Localization`.
 
 ---
 

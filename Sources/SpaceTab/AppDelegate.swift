@@ -140,29 +140,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
 
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-        menu.addItem(disabledItem(version.map { "SpaceTab \($0)" } ?? "SpaceTab"))
+        menu.addItem(disabledItem(version.map { String(localized: "SpaceTab \($0)") } ?? "SpaceTab"))
 
         if !hotKeys.isRunning {
-            menu.addItem(disabledItem("Accessibility permission needed"))
-            menu.addItem(item("Open Accessibility Settings…", #selector(openAccessibilitySettings)))
+            menu.addItem(disabledItem(String(localized: "Accessibility permission needed")))
+            menu.addItem(item(String(localized: "Open Accessibility Settings…"), #selector(openAccessibilitySettings)))
         } else if IsSecureEventInputEnabled() {
             // Secure input hides key presses from event taps.
-            menu.addItem(disabledItem("⌥ Tab is paused: an app is using secure input"))
+            menu.addItem(disabledItem(String(localized: "⌥ Tab is paused: an app is using secure input")))
         } else {
-            menu.addItem(disabledItem("Press ⌥ Tab to switch windows"))
+            menu.addItem(disabledItem(String(localized: "Press ⌥ Tab to switch windows")))
         }
 
         menu.addItem(.separator())
         if updater.isAvailable {
-            menu.addItem(item("Check for Updates…", #selector(checkForUpdates)))
+            menu.addItem(item(String(localized: "Check for Updates…"), #selector(checkForUpdates)))
         }
-        menu.addItem(item("Settings…", #selector(openSettings), key: ","))
-        let launchItem = item("Launch at Login", #selector(toggleLaunchAtLogin))
+        menu.addItem(item(String(localized: "Settings…"), #selector(openSettings), key: ","))
+        let launchItem = item(String(localized: "Launch at Login"), #selector(toggleLaunchAtLogin))
         switch LaunchAtLogin.status {
         case .enabled:
             launchItem.state = .on
         case .requiresApproval:
-            launchItem.title = "Launch at Login (allow in System Settings)"
+            launchItem.title = String(localized: "Launch at Login (allow in System Settings)")
             launchItem.state = .mixed
         default:
             launchItem.state = .off
@@ -170,7 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(launchItem)
 
         menu.addItem(.separator())
-        menu.addItem(item("Quit SpaceTab", #selector(quit), key: "q"))
+        menu.addItem(item(String(localized: "Quit SpaceTab"), #selector(quit), key: "q"))
     }
 
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
@@ -189,7 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// be the active app, it would quit the switcher instead of the app you meant.
     private static func makeMainMenu() -> NSMenu {
         let fileMenu = NSMenu(title: "File")
-        fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        fileMenu.addItem(withTitle: String(localized: "Close"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         let fileItem = NSMenuItem()
         fileItem.submenu = fileMenu
         let mainMenu = NSMenu()
@@ -222,7 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         } catch {
             let alert = NSAlert(error: error)
-            alert.messageText = "Could not change Launch at Login"
+            alert.messageText = String(localized: "Could not change Launch at Login")
             NSApp.activate()
             alert.runModal()
             if !settingsWindow.isVisible {

@@ -6,7 +6,7 @@ enum SettingsTransfer {
         case notASettingsFile
 
         var errorDescription: String? {
-            "This file doesn't contain SpaceTab settings."
+            String(localized: "This file doesn't contain SpaceTab settings.")
         }
     }
 
@@ -76,7 +76,7 @@ enum SettingsTransfer {
     static func importWithPanel() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.json]
-        panel.message = "Choose a SpaceTab settings file."
+        panel.message = String(localized: "Choose a SpaceTab settings file.")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try `import`(Data(contentsOf: url))

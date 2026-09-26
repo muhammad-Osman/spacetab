@@ -10,9 +10,9 @@ enum WindowPlacement: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .mixed: "Show"
-        case .atEnd: "Show at the end"
-        case .hidden: "Don't show"
+        case .mixed: String(localized: "Show")
+        case .atEnd: String(localized: "Show at the end")
+        case .hidden: String(localized: "Don't show")
         }
     }
 }
@@ -27,9 +27,9 @@ enum SwitcherStyle: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .titles: "Titles"
-        case .appIcons: "App Icons"
-        case .thumbnails: "Thumbnails"
+        case .titles: String(localized: "Titles")
+        case .appIcons: String(localized: "App Icons")
+        case .thumbnails: String(localized: "Thumbnails")
         }
     }
 }
@@ -43,8 +43,8 @@ enum ScreenChoice: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .all: "All screens"
-        case .withMouse: "The screen with the mouse"
+        case .all: String(localized: "All screens")
+        case .withMouse: String(localized: "The screen with the mouse")
         }
     }
 }
@@ -58,9 +58,9 @@ enum Theme: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .system: "System"
-        case .light: "Light"
-        case .dark: "Dark"
+        case .system: String(localized: "System")
+        case .light: String(localized: "Light")
+        case .dark: String(localized: "Dark")
         }
     }
 }
@@ -74,9 +74,9 @@ enum SwitcherSize: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .small: "Small"
-        case .medium: "Medium"
-        case .large: "Large"
+        case .small: String(localized: "Small")
+        case .medium: String(localized: "Medium")
+        case .large: String(localized: "Large")
         }
     }
 
@@ -98,9 +98,9 @@ enum SwitcherSpacing: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .compact: "Compact"
-        case .normal: "Normal"
-        case .roomy: "Roomy"
+        case .compact: String(localized: "Compact")
+        case .normal: String(localized: "Normal")
+        case .roomy: String(localized: "Roomy")
         }
     }
 
@@ -122,9 +122,9 @@ enum AnimationSpeed: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .off: "Off"
-        case .fast: "Fast"
-        case .normal: "Normal"
+        case .off: String(localized: "Off")
+        case .fast: String(localized: "Fast")
+        case .normal: String(localized: "Normal")
         }
     }
 

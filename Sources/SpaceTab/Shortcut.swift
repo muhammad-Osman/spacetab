@@ -12,9 +12,9 @@ enum ShortcutScope: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .currentDesktop: "Windows on the current desktop"
-        case .allDesktops: "Windows on all desktops"
-        case .currentApp: "Windows of the current app"
+        case .currentDesktop: String(localized: "Windows on the current desktop")
+        case .allDesktops: String(localized: "Windows on all desktops")
+        case .currentApp: String(localized: "Windows of the current app")
         }
     }
 }
@@ -100,7 +100,7 @@ struct Shortcut: Codable, Equatable, Identifiable, Sendable {
 
     static func keyName(_ keyCode: Int64) -> String {
         if let name = specialKeyNames[keyCode] {
-            return name
+            return String(localized: String.LocalizationValue(name))
         }
         return MainActor.assumeIsolated { KeyTranslator.character(keyCode: keyCode, shift: false) }?.uppercased()
             ?? "Key \(keyCode)"

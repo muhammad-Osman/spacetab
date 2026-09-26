@@ -66,9 +66,9 @@ class SwitcherCell: NSView {
     var stateText: String? {
         switch windowInfo.state {
         case .normal: nil
-        case .minimized: "Minimized"
-        case .appHidden: "Hidden"
-        case .otherDesktop: "Other desktop"
+        case .minimized: String(localized: "Minimized")
+        case .appHidden: String(localized: "Hidden")
+        case .otherDesktop: String(localized: "Other desktop")
         }
     }
 

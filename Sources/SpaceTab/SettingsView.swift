@@ -167,7 +167,7 @@ struct SettingsView: View {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.application]
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
-        panel.message = "Choose an app to keep out of the switcher."
+        panel.message = String(localized: "Choose an app to keep out of the switcher.")
         guard panel.runModal() == .OK, let url = panel.url, let id = Bundle(url: url)?.bundleIdentifier else { return }
         setExcluded(AppSettings.parseExcluded(excludedApps).union([id]))
     }
@@ -293,9 +293,9 @@ struct SettingsView: View {
         }
     }
 
-    private func keyRow(_ key: String, _ action: String) -> some View {
+    private func keyRow(_ key: String, _ action: LocalizedStringKey) -> some View {
         HStack {
-            Text(key)
+            Text(verbatim: key)
                 .font(.system(.body, design: .monospaced))
                 .frame(width: 40, alignment: .leading)
             Text(action)

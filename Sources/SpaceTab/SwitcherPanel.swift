@@ -23,7 +23,7 @@ final class SwitcherPanel: NSPanel {
     private let scrollView = NSScrollView()
     private let titleBelow = NSTextField(labelWithString: "")
     private let searchField = NSTextField(labelWithString: "")
-    private let emptyLabel = NSTextField(labelWithString: "No matching windows")
+    private let emptyLabel = NSTextField(labelWithString: String(localized: "No matching windows"))
     private var cells: [SwitcherCell] = []
     private var selectedIndex = 0
 
@@ -161,7 +161,7 @@ final class SwitcherPanel: NSPanel {
 
         searchField.isHidden = search == nil
         if let search {
-            searchField.stringValue = "Search: \(search)"
+            searchField.stringValue = String(localized: "Search: \(search)")
             searchField.frame = NSRect(
                 x: Self.padding + 4,
                 y: size.height - Self.padding - barHeight + 6,

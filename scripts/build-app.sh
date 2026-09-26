@@ -43,6 +43,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/SpaceTab" "$APP/Contents/MacOS/SpaceTab"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp -R Resources/Localization/*.lproj "$APP/Contents/Resources/"
 
 # Sparkle, for automatic updates. Its helpers are signed first, then the
 # framework, then the app, as Sparkle's documentation asks.

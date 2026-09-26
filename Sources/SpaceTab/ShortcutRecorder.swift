@@ -132,7 +132,7 @@ struct ShortcutRecorder: NSViewRepresentable {
         }
 
         private func updateTitle() {
-            button.title = isRecording ? "Press keys…" : shortcutText
+            button.title = isRecording ? String(localized: "Press keys…") : shortcutText
         }
     }
 }

@@ -67,7 +67,7 @@ enum ScreenRecordingPermission {
                     NSApp.terminate(nil)
                 } else if let error {
                     let alert = NSAlert(error: error)
-                    alert.messageText = "Could not reopen SpaceTab"
+                    alert.messageText = String(localized: "Could not reopen SpaceTab")
                     alert.runModal()
                 }
             }
