@@ -159,7 +159,7 @@ The script signs the app ad hoc, and macOS treats each changed ad hoc build as a
 | Settings window | SwiftUI |
 | Windows on other desktops | Private SkyLight / CGS APIs (planned) |
 | Window thumbnails | ScreenCaptureKit |
-| Automatic updates | Sparkle |
+| Automatic updates | Sparkle, from the update feed published with each GitHub release |
 
 > **Note:** macOS has no public API for desktops (Spaces), so SpaceTab uses private APIs, like other window managers do. A new macOS version can break them, and fixes are released as quickly as possible. Because of these APIs, SpaceTab cannot be sold on the Mac App Store and is distributed directly instead.
 

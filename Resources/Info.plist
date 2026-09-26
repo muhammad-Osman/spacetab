@@ -28,5 +28,13 @@
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/muhammad-Osman/spacetab/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>7Qp+SotP75sQZFktBIxHje8hWZ7MIRC1dkQ9ycDVgpY=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>

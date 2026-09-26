@@ -44,7 +44,30 @@ cp "$BIN_DIR/SpaceTab" "$APP/Contents/MacOS/SpaceTab"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
-codesign --force --sign "${SIGN_IDENTITY:--}" "$APP"
+# Sparkle, for automatic updates. Its helpers are signed first, then the
+# framework, then the app, as Sparkle's documentation asks.
+SPARKLE=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+mkdir -p "$APP/Contents/Frameworks"
+cp -R "$SPARKLE" "$FRAMEWORK"
+# The hardened runtime only loads frameworks signed by the same team, so it
+# is used with a real identity (as notarization requires), not for ad hoc builds.
+if [ -n "${SIGN_IDENTITY:-}" ]; then
+    SIGN_OPTIONS="--options runtime"
+else
+    SIGN_OPTIONS=""
+fi
+sign() {
+    # shellcheck disable=SC2086
+    codesign --force $SIGN_OPTIONS --sign "${SIGN_IDENTITY:--}" "$@"
+}
+sign "$FRAMEWORK/Versions/B/XPCServices/Installer.xpc"
+sign --preserve-metadata=entitlements "$FRAMEWORK/Versions/B/XPCServices/Downloader.xpc"
+sign "$FRAMEWORK/Versions/B/Autoupdate"
+sign "$FRAMEWORK/Versions/B/Updater.app"
+sign "$FRAMEWORK"
+
+sign "$APP"
 
 echo "Built $APP"
 

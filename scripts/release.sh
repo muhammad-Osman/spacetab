@@ -39,13 +39,37 @@ if [ -n "${SIGN_IDENTITY:-}" ] && [ -n "${NOTARY_PROFILE:-}" ]; then
     xcrun stapler staple "$DMG"
 fi
 
+# The update feed. Sparkle signs the DMG with the private key in the keychain
+# (created with generate_keys); the app checks the signature with the public
+# key in Info.plist.
+TOOLS=".build/artifacts/sparkle/Sparkle/bin"
+SIGNATURE="$("$TOOLS/sign_update" "$DMG")"
+APPCAST="build/appcast.xml"
+cat > "$APPCAST" <<XML
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>SpaceTab</title>
+    <item>
+      <title>SpaceTab $VERSION</title>
+      <pubDate>$(date -R)</pubDate>
+      <sparkle:version>$BUILD_NUMBER</sparkle:version>
+      <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <link>https://github.com/muhammad-Osman/spacetab/releases/tag/v$VERSION</link>
+      <enclosure url="https://github.com/muhammad-Osman/spacetab/releases/download/v$VERSION/SpaceTab-$VERSION.dmg" type="application/octet-stream" $SIGNATURE/>
+    </item>
+  </channel>
+</rss>
+XML
+
 SHA="$(shasum -a 256 "$DMG" | cut -d' ' -f1)"
 sed -i '' -e "s/^  version \".*\"/  version \"$VERSION\"/" -e "s/^  sha256 \".*\"/  sha256 \"$SHA\"/" "$CASK"
 
 git add Resources/Info.plist "$CASK"
 git commit -q -m "Release $VERSION"
 git tag -a "v$VERSION" -m "SpaceTab $VERSION"
-echo "Committed and tagged v$VERSION. DMG: $DMG (sha256 $SHA)"
+echo "Committed and tagged v$VERSION. DMG: $DMG (sha256 $SHA), update feed: $APPCAST"
 
 if [ "$PUBLISH" != "--publish" ]; then
     echo "Run again with --publish to push, create the GitHub release and update the tap."
@@ -54,7 +78,7 @@ fi
 
 git push
 git push origin "v$VERSION"
-gh release create "v$VERSION" "$DMG" --title "SpaceTab $VERSION" --generate-notes
+gh release create "v$VERSION" "$DMG" "$APPCAST" --title "SpaceTab $VERSION" --generate-notes
 
 if [ -d "$TAP_DIR" ]; then
     mkdir -p "$TAP_DIR/Casks"

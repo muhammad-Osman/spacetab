@@ -35,6 +35,7 @@ struct SettingsView: View {
     @State private var screenRecordingRequested = ScreenRecordingPermission.wasRequested
     @State private var launchStatus = LaunchAtLogin.status
     @State private var launchError: String?
+    @State private var automaticUpdates = Updater.shared.checksAutomatically
 
     var body: some View {
         TabView {
@@ -246,6 +247,20 @@ struct SettingsView: View {
                     Text("To open Settings without the icon, open SpaceTab again from Applications or Spotlight.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+            }
+            if Updater.shared.isAvailable {
+                Section {
+                    Toggle("Check for updates automatically", isOn: $automaticUpdates)
+                        .onChange(of: automaticUpdates) { _, newValue in
+                            Updater.shared.checksAutomatically = newValue
+                        }
+                    HStack {
+                        Text("SpaceTab \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Check Now") { Updater.shared.checkForUpdates() }
+                    }
                 }
             }
             Section {

@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var switcher = SwitcherController(history: history)
     private lazy var focusTracker = FocusTracker(history: history)
     private let settingsWindow = SettingsWindowController()
+    private let updater = Updater.shared
     private var hotKeys: HotKeyMonitor!
     private var statusItem: NSStatusItem!
     private var permissionTimer: Timer?
@@ -152,6 +153,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        if updater.isAvailable {
+            menu.addItem(item("Check for Updates…", #selector(checkForUpdates)))
+        }
         menu.addItem(item("Settings…", #selector(openSettings), key: ","))
         let launchItem = item("Launch at Login", #selector(toggleLaunchAtLogin))
         switch LaunchAtLogin.status {
@@ -196,6 +200,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openSettings() {
         settingsWindow.show()
+    }
+
+    @objc private func checkForUpdates() {
+        updater.checkForUpdates()
     }
 
     @objc private func openAccessibilitySettings() {
