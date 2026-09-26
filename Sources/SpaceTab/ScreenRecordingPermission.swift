@@ -34,12 +34,15 @@ enum ScreenRecordingPermission {
     }
 
     /// Asks the system again. Shows no dialog: the live check only runs once
-    /// the user has been asked.
+    /// the user has been asked. Without an answer in time, the last known
+    /// state stays.
     static func refresh() async {
         if CGPreflightScreenCaptureAccess() {
             isGranted = true
         } else if wasRequested {
-            isGranted = await probe()
+            if let granted = await probe() {
+                isGranted = granted
+            }
         } else {
             isGranted = false
         }
@@ -49,36 +52,35 @@ enum ScreenRecordingPermission {
     /// its periodic "still allow?" reminder at a calm moment rather than in
     /// the middle of ⌥ Tab.
     static func warmUp() async {
-        guard isGranted else { return }
-        isGranted = await probe()
+        guard isGranted, let granted = await probe() else { return }
+        isGranted = granted
     }
 
     /// Quits and reopens SpaceTab, which macOS needs before a newly granted
-    /// permission takes effect.
+    /// permission takes effect. Stays running if the new copy didn't start.
     static func relaunch() {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { app, error in
             DispatchQueue.main.async {
-                NSApp.terminate(nil)
+                if app != nil, error == nil {
+                    NSApp.terminate(nil)
+                } else if let error {
+                    let alert = NSAlert(error: error)
+                    alert.messageText = "Could not reopen SpaceTab"
+                    alert.runModal()
+                }
             }
         }
     }
 
-    /// Whether ScreenCaptureKit answers: listing windows fails without the permission.
-    private static func probe() async -> Bool {
-        await withTaskGroup(of: Bool?.self) { group in
-            group.addTask {
-                (try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)) != nil
-            }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(probeTimeout))
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            // No answer in time counts as granted: the permission wasn't refused.
-            return first ?? true
+    /// Whether ScreenCaptureKit answers: listing windows fails without the
+    /// permission. Nil when it doesn't answer in time; a late answer is kept.
+    private static func probe() async -> Bool? {
+        await withTimeout(probeTimeout, late: { granted in
+            Task { @MainActor in isGranted = granted }
+        }) {
+            (try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)) != nil
         }
     }
 }

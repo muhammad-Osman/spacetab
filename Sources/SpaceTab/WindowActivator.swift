@@ -10,8 +10,12 @@ import AppKit
 final class WindowActivator: @unchecked Sendable {
     /// When to check that the window really has focus, counted from the previous check.
     private static let checkDelays: [TimeInterval] = [0.1, 0.15, 0.25]
-    /// A minimized window first has to come out of the Dock.
+    /// A minimized window first has to come out of the Dock, and a window on
+    /// another desktop has to wait for the desktop to slide in.
     private static let minimizedCheckDelays: [TimeInterval] = [0.1, 0.15, 0.25, 0.3]
+    private static let otherDesktopCheckDelays: [TimeInterval] = [0.15, 0.25, 0.35, 0.5]
+    /// How long to look for the element of a window on another desktop.
+    private static let bruteForceBudget: TimeInterval = 0.3
     /// How long to wait for a first answer before treating the app as hung.
     private static let probeTimeout: Float = 0.1
 
@@ -51,7 +55,11 @@ final class WindowActivator: @unchecked Sendable {
                 DispatchQueue.main.async { done(false) }
                 return
             }
-            let delays = window.state == .minimized ? Self.minimizedCheckDelays : Self.checkDelays
+            let delays = switch window.state {
+            case .minimized: Self.minimizedCheckDelays
+            case .otherDesktop: Self.otherDesktopCheckDelays
+            default: Self.checkDelays
+            }
             self.check(window, element: element, token: token, attempt: 0, delays: delays, done: done)
         }
     }
@@ -64,7 +72,12 @@ final class WindowActivator: @unchecked Sendable {
     }
 
     private static func findElement(of window: WindowInfo) -> AXUIElement? {
-        AX.windows(of: window.pid).windows?.first { AX.windowID(of: $0) == window.id }
+        if let element = AX.windows(of: window.pid).windows?.first(where: { AX.windowID(of: $0) == window.id }) {
+            return element
+        }
+        guard window.state == .otherDesktop else { return nil }
+        // Accessibility leaves windows on other desktops out of the list.
+        return AX.windowsByBruteForce(pid: window.pid, wanted: [window.id], from: 0, budget: bruteForceBudget).found[window.id]
     }
 
     private static func bringForward(_ window: WindowInfo, element: AXUIElement?) {

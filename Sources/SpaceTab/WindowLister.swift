@@ -30,6 +30,10 @@ final class WindowLister: @unchecked Sendable {
     private var lastKnown: [pid_t: [CGWindowID: CachedWindow]] = [:]
     /// Windows each app reported last time that the filter left out.
     private var lastRejected: [pid_t: Set<CGWindowID>] = [:]
+    /// Where the search for each app's windows on other desktops continues.
+    private var bruteForceCursor: [pid_t: UInt64] = [:]
+    /// How long one listing spends finding windows on other desktops.
+    private static let bruteForceBudget: TimeInterval = 0.04
 
     /// IDs of the normal windows on screen, front to back.
     static func onScreenWindowIDs() -> [CGWindowID] {
@@ -131,7 +135,7 @@ final class WindowLister: @unchecked Sendable {
 
         if options.allDesktops || options.minimizedWindows != .hidden || options.hiddenAppWindows != .hidden {
             let onScreenIDs = Set(onScreen.compactMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value })
-            windows += offScreenWindows(excluding: onScreenIDs, options: options, lookups: &lookups)
+            windows += offScreenWindows(excluding: onScreenIDs, options: options, lookups: &lookups, fresh: &fresh)
         }
 
         updateCache(lookups: lookups, fresh: fresh, rejected: rejected, examined: examined)
@@ -173,14 +177,21 @@ final class WindowLister: @unchecked Sendable {
 
     /// Minimized windows and windows of hidden apps on the current desktop,
     /// and windows on other desktops when asked for.
+    ///
+    /// Accessibility leaves windows on other desktops out of an app's window
+    /// list, so those are found by trying element IDs, a little per listing,
+    /// and remembered. Until found, they are listed without a title.
     private func offScreenWindows(
         excluding onScreenIDs: Set<CGWindowID>,
         options: ListingOptions,
-        lookups: inout [pid_t: Lookup]
+        lookups: inout [pid_t: Lookup],
+        fresh: inout [pid_t: [CGWindowID: CachedWindow]]
     ) -> [WindowInfo] {
         guard let currentSpaces = Spaces.currentSpaceIDs() else { return [] }
         let entries = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         var windows: [WindowInfo] = []
+        /// Windows on other desktops that Accessibility didn't report, per app.
+        var unreported: [pid_t: [(id: CGWindowID, bounds: CGRect, app: NSRunningApplication, name: String)]] = [:]
 
         for entry in entries {
             guard
@@ -200,41 +211,106 @@ final class WindowLister: @unchecked Sendable {
             // Minimized state only comes from Accessibility, so skip busy apps.
             let lookup = lookups[pid] ?? accessibilityWindows(of: pid)
             lookups[pid] = lookup
-            // A window missing from Accessibility off screen is usually one the
-            // app closed but kept, not an overlay, so it isn't marked rejected.
-            guard case let .answered(axWindows) = lookup, let element = axWindows[id] else { continue }
+            guard case let .answered(axWindows) = lookup else { continue }
+            guard let element = axWindows[id] else {
+                if !onCurrentDesktop {
+                    let name = entry[kCGWindowName as String] as? String ?? ""
+                    unreported[pid, default: []].append((id, bounds, app, name))
+                }
+                // Otherwise the app closed the window but kept it: not an overlay, so not rejected.
+                continue
+            }
             guard let attributes = AX.windowAttributes(of: element) else {
                 // The app stopped answering. Don't wait on it for its other windows.
                 lookups[pid] = .busy
                 continue
             }
-            guard Self.isSwitchable(subrole: attributes.subrole, title: attributes.title, size: bounds.size) else { continue }
-
-            let state: WindowInfo.State
-            if attributes.isMinimized {
-                guard options.minimizedWindows != .hidden else { continue }
-                state = .minimized
-            } else if app.isHidden {
-                guard options.hiddenAppWindows != .hidden else { continue }
-                state = .appHidden
-            } else if !onCurrentDesktop {
-                state = .otherDesktop
-            } else {
-                // Off screen for another reason, such as a window being set up.
-                continue
+            if let window = offScreenWindow(
+                id: id, bounds: bounds, app: app, element: element, attributes: attributes,
+                onCurrentDesktop: onCurrentDesktop, options: options
+            ) {
+                windows.append(window)
             }
+        }
 
-            windows.append(WindowInfo(
-                id: id,
-                pid: pid,
-                appName: app.localizedName ?? "",
-                title: attributes.title,
-                icon: app.icon,
-                element: element,
-                state: state
-            ))
+        let deadline = Date().addingTimeInterval(Self.bruteForceBudget)
+        for (pid, candidates) in unreported {
+            var found: [CGWindowID: AXUIElement] = [:]
+            var missing = Set<CGWindowID>()
+            for candidate in candidates {
+                if let cached = lastKnown[pid]?[candidate.id] {
+                    found[candidate.id] = cached.element
+                } else {
+                    missing.insert(candidate.id)
+                }
+            }
+            if !missing.isEmpty, Date() < deadline {
+                let result = AX.windowsByBruteForce(
+                    pid: pid, wanted: missing, from: bruteForceCursor[pid] ?? 0, budget: deadline.timeIntervalSinceNow
+                )
+                bruteForceCursor[pid] = result.cursor
+                found.merge(result.found) { $1 }
+            }
+            for candidate in candidates {
+                if let element = found[candidate.id], let attributes = AX.windowAttributes(of: element) {
+                    fresh[pid, default: [:]][candidate.id] = CachedWindow(element: element, title: attributes.title)
+                    if let window = offScreenWindow(
+                        id: candidate.id, bounds: candidate.bounds, app: candidate.app, element: element,
+                        attributes: attributes, onCurrentDesktop: false, options: options
+                    ) {
+                        windows.append(window)
+                    }
+                } else {
+                    // Not found yet: listed anyway, with the title CoreGraphics
+                    // gives (only with Screen Recording permission).
+                    windows.append(WindowInfo(
+                        id: candidate.id,
+                        pid: pid,
+                        appName: candidate.app.localizedName ?? "",
+                        title: candidate.name,
+                        icon: candidate.app.icon,
+                        element: nil,
+                        state: .otherDesktop
+                    ))
+                }
+            }
         }
         return windows
+    }
+
+    /// An off-screen window's entry, or nil when it isn't one to list.
+    private func offScreenWindow(
+        id: CGWindowID,
+        bounds: CGRect,
+        app: NSRunningApplication,
+        element: AXUIElement,
+        attributes: AX.WindowAttributes,
+        onCurrentDesktop: Bool,
+        options: ListingOptions
+    ) -> WindowInfo? {
+        guard Self.isSwitchable(subrole: attributes.subrole, title: attributes.title, size: bounds.size) else { return nil }
+        let state: WindowInfo.State
+        if attributes.isMinimized {
+            guard options.minimizedWindows != .hidden else { return nil }
+            state = .minimized
+        } else if app.isHidden {
+            guard options.hiddenAppWindows != .hidden else { return nil }
+            state = .appHidden
+        } else if !onCurrentDesktop {
+            state = .otherDesktop
+        } else {
+            // Off screen for another reason, such as a window being set up.
+            return nil
+        }
+        return WindowInfo(
+            id: id,
+            pid: app.processIdentifier,
+            appName: app.localizedName ?? "",
+            title: attributes.title,
+            icon: app.icon,
+            element: element,
+            state: state
+        )
     }
 
     /// The basic checks every listed window passes: a normal window of a

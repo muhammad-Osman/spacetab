@@ -7,16 +7,17 @@ struct ShortcutRecorder: NSViewRepresentable {
     @Binding var shortcut: Shortcut
 
     func makeNSView(context: Context) -> RecorderView {
-        let view = RecorderView()
-        view.onRecord = { keyCode, modifiers in
-            shortcut.keyCode = keyCode
-            shortcut.modifiers = modifiers
-        }
-        return view
+        RecorderView()
     }
 
     func updateNSView(_ view: RecorderView, context: Context) {
         view.shortcutText = shortcut.displayText
+        // Set on every update: the binding of a row in a list changes when
+        // rows above it are removed.
+        view.onRecord = { keyCode, modifiers in
+            shortcut.keyCode = keyCode
+            shortcut.modifiers = modifiers
+        }
     }
 
     final class RecorderView: NSView {
@@ -26,6 +27,7 @@ struct ShortcutRecorder: NSViewRepresentable {
         }
 
         private let button = NSButton(title: "", target: nil, action: nil)
+        private var windowTokens: [NSObjectProtocol] = []
         private var isRecording = false {
             didSet {
                 updateTitle()
@@ -73,9 +75,32 @@ struct ShortcutRecorder: NSViewRepresentable {
 
         override func viewWillMove(toWindow newWindow: NSWindow?) {
             super.viewWillMove(toWindow: newWindow)
+            windowTokens.forEach(NotificationCenter.default.removeObserver)
+            windowTokens = []
             if newWindow == nil {
                 isRecording = false
             }
+        }
+
+        /// Recording ends when the window closes or another window or app
+        /// takes over. Otherwise every key on the Mac would keep going to a
+        /// recorder nobody can see.
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            for name in [NSWindow.didResignKeyNotification, NSWindow.willCloseNotification] {
+                windowTokens.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.stopRecording() }
+                })
+            }
+        }
+
+        private func stopRecording() {
+            guard isRecording else { return }
+            if window?.firstResponder === self {
+                window?.makeFirstResponder(nil)
+            }
+            isRecording = false
         }
 
         override func keyDown(with event: NSEvent) {
@@ -85,16 +110,18 @@ struct ShortcutRecorder: NSViewRepresentable {
             }
             if event.keyCode == 53 {
                 // Esc cancels.
-                window?.makeFirstResponder(nil)
+                stopRecording()
                 return
             }
-            let modifiers = Shortcut.Modifiers(flags: CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue)))
-            guard !modifiers.isEmpty else {
+            let flags = CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue))
+            let modifiers = Shortcut.Modifiers(flags: flags, keyCode: Int64(event.keyCode))
+            // At least one modifier that macOS reports reliably; Fn alone isn't enough.
+            guard !modifiers.subtracting(.function).isEmpty else {
                 NSSound.beep()
                 return
             }
             onRecord?(Int64(event.keyCode), modifiers)
-            window?.makeFirstResponder(nil)
+            stopRecording()
         }
 
         override func performKeyEquivalent(with event: NSEvent) -> Bool {

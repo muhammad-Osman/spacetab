@@ -158,9 +158,10 @@ final class TitleCell: SwitcherCell {
     }
 
     static func layout(for windows: [WindowInfo], appearance: SwitcherAppearance) -> CellLayout {
-        let width = Self.width * appearance.scale
-        let height = Self.height * appearance.scale
-        let step = height + gap * appearance.spacingFactor
+        // Whole points, so rows aren't drawn between pixels.
+        let width = (Self.width * appearance.scale).rounded()
+        let height = (Self.height * appearance.scale).rounded()
+        let step = height + (gap * appearance.spacingFactor).rounded()
         let cells = windows.enumerated().map { index, window in
             TitleCell(
                 window: window,
@@ -204,11 +205,11 @@ final class IconCell: SwitcherCell {
     }
 
     static func layout(for windows: [WindowInfo], availableWidth: CGFloat, appearance: SwitcherAppearance) -> CellLayout {
-        let size = Self.size * appearance.scale
+        let size = (Self.size * appearance.scale).rounded()
         let grid = GridLayout.fixed(
             count: windows.count,
             cellSize: CGSize(width: size, height: size),
-            spacing: spacing * appearance.spacingFactor,
+            spacing: (spacing * appearance.spacingFactor).rounded(),
             availableWidth: availableWidth
         )
         let cells = windows.enumerated().map { index, window in
@@ -317,11 +318,11 @@ final class ThumbnailCell: SwitcherCell {
         let grid = GridLayout.fitting(
             count: windows.count,
             in: available,
-            spacing: spacing * appearance.spacingFactor,
+            spacing: (spacing * appearance.spacingFactor).rounded(),
             aspectRatio: aspectRatio,
-            extraHeight: titleHeight * scale + inset,
-            minCellWidth: 150 * scale,
-            maxCellWidth: 320 * scale
+            extraHeight: (titleHeight * scale).rounded() + inset,
+            minCellWidth: (150 * scale).rounded(),
+            maxCellWidth: (320 * scale).rounded()
         )
         let cells = windows.enumerated().map { index, window in
             ThumbnailCell(window: window, frame: grid.frame(ofCell: index), cached: thumbnails.cached(window.id), scale: scale)

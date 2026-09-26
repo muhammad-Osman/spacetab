@@ -32,6 +32,7 @@ struct SettingsView: View {
 
     @State private var shortcuts = ShortcutSettings.load()
     @State private var screenRecordingGranted = ScreenRecordingPermission.isGranted
+    @State private var screenRecordingRequested = ScreenRecordingPermission.wasRequested
     @State private var launchStatus = LaunchAtLogin.status
     @State private var launchError: String?
 
@@ -79,9 +80,12 @@ struct SettingsView: View {
                             Text("Thumbnails need Screen Recording permission. Until then, app icons are shown.")
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            Button("Allow…") { ScreenRecordingPermission.request() }
+                            Button("Allow…") {
+                                ScreenRecordingPermission.request()
+                                screenRecordingRequested = true
+                            }
                         }
-                        if ScreenRecordingPermission.wasRequested {
+                        if screenRecordingRequested {
                             HStack {
                                 Text("Already allowed in System Settings? macOS needs SpaceTab reopened.")
                                     .font(.caption)
@@ -270,6 +274,7 @@ struct SettingsView: View {
         Task {
             await ScreenRecordingPermission.refresh()
             screenRecordingGranted = ScreenRecordingPermission.isGranted
+            screenRecordingRequested = ScreenRecordingPermission.wasRequested
         }
     }
 

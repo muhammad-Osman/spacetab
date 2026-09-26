@@ -35,4 +35,19 @@ final class ShortcutTests: XCTestCase {
         let decoded = try JSONDecoder().decode([Shortcut].self, from: data)
         XCTAssertEqual(decoded, Shortcut.defaults)
     }
+
+    func testArrowKeysDoNotCountTheFnFlagAsAModifier() {
+        // Arrow key events always carry the Fn flag.
+        let optionRight = Shortcut(keyCode: 124, modifiers: .option, scope: .currentDesktop)
+        XCTAssertEqual(Shortcut.Modifiers(flags: [.maskAlternate, .maskSecondaryFn], keyCode: 124), .option)
+        XCTAssertTrue(optionRight.matches(keyCode: 124, flags: [.maskAlternate, .maskSecondaryFn, .maskNumericPad]))
+        XCTAssertEqual(Shortcut.Modifiers(flags: [.maskAlternate, .maskSecondaryFn], keyCode: 0), [.option, .function],
+                       "for a letter, Fn means the Globe key is held")
+    }
+
+    func testFnIsNotRequiredToKeepTheSwitcherOpen() {
+        let globeOptionTab = Shortcut(keyCode: 48, modifiers: [.option, .function], scope: .currentDesktop)
+        XCTAssertTrue(globeOptionTab.isHeld(in: .maskAlternate))
+        XCTAssertFalse(globeOptionTab.isHeld(in: .maskSecondaryFn))
+    }
 }

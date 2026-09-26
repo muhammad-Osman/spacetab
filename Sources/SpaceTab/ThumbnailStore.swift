@@ -14,11 +14,19 @@ final class ThumbnailStore {
     private static let contentTimeout: TimeInterval = 2
     /// How long the list of capturable windows is reused between opens.
     private static let contentMaxAge: TimeInterval = 3
+    /// A preview this fresh is shown again instead of captured again, so
+    /// typing in the search doesn't restart every capture.
+    private static let freshEnough: TimeInterval = 1
 
     private var images: [CGWindowID: CGImage] = [:]
+    private var capturedAt: [CGWindowID: Date] = [:]
     /// Least recently used first, to drop old previews when over the limit.
     private var recentOrder: [CGWindowID] = []
     private var content: (windows: [CGWindowID: SCWindow], date: Date)?
+    /// Bumped by `stop()` and each `capture()`. Only the latest round starts
+    /// new captures and updates cells; results are kept whatever the round.
+    /// Read from capture tasks as well; a stale read there only delays a stop.
+    private nonisolated(unsafe) var round = 0
 
     func cached(_ id: CGWindowID) -> CGImage? {
         guard let image = images[id] else { return nil }
@@ -28,32 +36,46 @@ final class ThumbnailStore {
 
     /// Forgets every preview.
     func clear() {
+        stop()
         images = [:]
+        capturedAt = [:]
         recentOrder = []
         content = nil
     }
 
+    /// Stops updating cells and starting captures. Captures under way still
+    /// finish and are kept for later.
+    func stop() {
+        round += 1
+    }
+
     /// Captures the on-screen windows among `windows`, the selected one
     /// first, and calls `update` with each window's index and preview as it
-    /// arrives. Does nothing without Screen Recording permission. Cancel the
-    /// returned task when the switcher closes: captures already started
-    /// still finish and are kept for later, but no new ones start.
+    /// arrives. Does nothing without Screen Recording permission.
     func capture(
         _ windows: [WindowInfo],
         selectedIndex: Int,
         maxPixelSize: CGSize,
         update: @escaping @MainActor (Int, CGImage) -> Void
-    ) -> Task<Void, Never>? {
-        guard ScreenRecordingPermission.isGranted else { return nil }
-        var targets = windows.enumerated()
-            .filter { $0.element.isOnScreen }
-            .map { (index: $0.offset, id: $0.element.id) }
+    ) {
+        guard ScreenRecordingPermission.isGranted else { return }
+        round += 1
+        let round = self.round
+
+        var targets: [(index: Int, id: CGWindowID)] = []
+        for (index, window) in windows.enumerated() where window.isOnScreen {
+            if let date = capturedAt[window.id], Date().timeIntervalSince(date) < Self.freshEnough, let image = images[window.id] {
+                update(index, image)
+            } else {
+                targets.append((index, window.id))
+            }
+        }
         if let first = targets.firstIndex(where: { $0.index == selectedIndex }) {
             targets.insert(targets.remove(at: first), at: 0)
         }
-        guard !targets.isEmpty else { return nil }
+        guard !targets.isEmpty else { return }
 
-        return Task { [weak self] in
+        Task { [weak self] in
             // Windows that no longer exist don't need a preview any more.
             let liveIDs = Set(
                 (CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? [])
@@ -66,11 +88,15 @@ final class ThumbnailStore {
             await withTaskGroup(of: (index: Int, id: CGWindowID, image: CGImage?).self) { group in
                 var pending = targets.filter { capturable[$0.id] != nil }
                 func startNext() {
-                    guard !Task.isCancelled, !pending.isEmpty else { return }
+                    guard self.round == round, !pending.isEmpty else { return }
                     let target = pending.removeFirst()
                     let window = capturable[target.id]!
                     group.addTask {
-                        (target.index, target.id, await Self.captureImage(of: window, maxPixelSize: maxPixelSize))
+                        let image = await Self.captureImage(of: window, maxPixelSize: maxPixelSize) { late in
+                            // Arrived after the watchdog gave up: still worth keeping.
+                            Task { @MainActor in self.store(late, for: target.id) }
+                        }
+                        return (target.index, target.id, image)
                     }
                 }
                 for _ in 0..<Self.maxConcurrentCaptures {
@@ -78,10 +104,12 @@ final class ThumbnailStore {
                 }
                 for await result in group {
                     if let image = result.image {
-                        // Kept even after the switcher closed, for when the window is minimized.
-                        self.store(image, for: result.id)
-                        if !Task.isCancelled {
-                            update(result.index, image)
+                        await MainActor.run {
+                            // Kept even after the switcher closed, for when the window is minimized.
+                            self.store(image, for: result.id)
+                            if self.round == round {
+                                update(result.index, image)
+                            }
                         }
                     }
                     startNext()
@@ -97,22 +125,30 @@ final class ThumbnailStore {
            ids.allSatisfy({ content.windows[$0] != nil }) {
             return content.windows
         }
-        guard let windows = await Self.shareableWindows() else { return nil }
+        let windows = await withTimeout(Self.contentTimeout, late: { late in
+            Task { @MainActor [weak self] in self?.content = (late, Date()) }
+        }) {
+            await Self.shareableWindows()
+        }
+        guard let windows else { return nil }
         content = (windows, Date())
         return windows
     }
 
     private func prune(keeping liveIDs: Set<CGWindowID>) {
         images = images.filter { liveIDs.contains($0.key) }
+        capturedAt = capturedAt.filter { liveIDs.contains($0.key) }
         recentOrder.removeAll { !liveIDs.contains($0) }
     }
 
     private func store(_ image: CGImage, for id: CGWindowID) {
         images[id] = image
+        capturedAt[id] = Date()
         markUsed(id)
         while recentOrder.count > Self.limit, let oldest = recentOrder.first {
             recentOrder.removeFirst()
             images[oldest] = nil
+            capturedAt[oldest] = nil
         }
     }
 
@@ -121,29 +157,21 @@ final class ThumbnailStore {
         recentOrder.append(id)
     }
 
-    /// Lists the windows ScreenCaptureKit can capture. Nil when it doesn't
-    /// answer in time, for example while a permission dialog is up.
+    /// Lists the windows ScreenCaptureKit can capture.
     private nonisolated static func shareableWindows() async -> [CGWindowID: SCWindow]? {
-        await withTaskGroup(of: [CGWindowID: SCWindow]?.self) { group in
-            group.addTask {
-                guard let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true) else {
-                    return nil
-                }
-                return Dictionary(content.windows.map { ($0.windowID, $0) }, uniquingKeysWith: { first, _ in first })
-            }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(contentTimeout))
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
+        guard let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true) else {
+            return nil
         }
+        return Dictionary(content.windows.map { ($0.windowID, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
-    /// One window's picture, at most `maxPixelSize`, or nil when the capture
-    /// fails or takes too long.
-    private nonisolated static func captureImage(of window: SCWindow, maxPixelSize: CGSize) async -> CGImage? {
+    /// One window's picture, at most `maxPixelSize`. Nil when the capture
+    /// fails or takes too long; a late picture goes to `late`.
+    private nonisolated static func captureImage(
+        of window: SCWindow,
+        maxPixelSize: CGSize,
+        late: @escaping @Sendable (CGImage) -> Void
+    ) async -> CGImage? {
         let frame = window.frame
         guard frame.width > 0, frame.height > 0 else { return nil }
         // Windows are captured at up to 2 pixels per point, scaled down to the cell.
@@ -152,34 +180,25 @@ final class ThumbnailStore {
         let height = max(1, Int(frame.height * scale))
         let filter = SCContentFilter(desktopIndependentWindow: window)
 
-        return await withTaskGroup(of: CGImage?.self) { group in
-            group.addTask {
-                if #available(macOS 26, *) {
-                    let configuration = SCScreenshotConfiguration()
-                    configuration.width = width
-                    configuration.height = height
-                    configuration.showsCursor = false
-                    configuration.ignoreShadows = true
-                    configuration.dynamicRange = .sdr
-                    let output = try? await SCScreenshotManager.captureScreenshot(contentFilter: filter, configuration: configuration)
-                    return output?.sdrImage
-                } else {
-                    let configuration = SCStreamConfiguration()
-                    configuration.width = width
-                    configuration.height = height
-                    configuration.scalesToFit = true
-                    configuration.showsCursor = false
-                    configuration.ignoreShadowsSingleWindow = true
-                    return try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
-                }
+        return await withTimeout(captureTimeout, late: late) {
+            if #available(macOS 26, *) {
+                let configuration = SCScreenshotConfiguration()
+                configuration.width = width
+                configuration.height = height
+                configuration.showsCursor = false
+                configuration.ignoreShadows = true
+                configuration.dynamicRange = .sdr
+                let output = try? await SCScreenshotManager.captureScreenshot(contentFilter: filter, configuration: configuration)
+                return output?.sdrImage
+            } else {
+                let configuration = SCStreamConfiguration()
+                configuration.width = width
+                configuration.height = height
+                configuration.scalesToFit = true
+                configuration.showsCursor = false
+                configuration.ignoreShadowsSingleWindow = true
+                return try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
             }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(captureTimeout))
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
         }
     }
 }

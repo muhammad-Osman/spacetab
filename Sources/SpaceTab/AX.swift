@@ -5,6 +5,10 @@ import ApplicationServices
 @_silgen_name("_AXUIElementGetWindow")
 private func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
 
+/// Private: makes an element from a token naming an app and an element ID.
+@_silgen_name("_AXUIElementCreateWithRemoteToken")
+private func _AXUIElementCreateWithRemoteToken(_ token: CFData) -> Unmanaged<AXUIElement>?
+
 /// Small wrappers around the Accessibility API. Each call waits for the target
 /// app (up to the global messaging timeout), so avoid calling them on the main thread.
 enum AX {
@@ -58,6 +62,39 @@ enum AX {
             title: array[1] as? String ?? "",
             isMinimized: (array[2] as? Bool) ?? false
         )
+    }
+
+    /// After this many element IDs the search starts over.
+    static let bruteForceLimit: UInt64 = 100_000
+
+    /// Finds windows the app doesn't report, such as windows on other
+    /// desktops, by trying element IDs from `cursor` on. Stops once every
+    /// wanted window is found or `budget` seconds have passed, and returns
+    /// where to continue next time. Each try asks the app, so keep the budget small.
+    static func windowsByBruteForce(
+        pid: pid_t,
+        wanted: Set<CGWindowID>,
+        from cursor: UInt64,
+        budget: TimeInterval
+    ) -> (found: [CGWindowID: AXUIElement], cursor: UInt64) {
+        let deadline = Date().addingTimeInterval(budget)
+        var remaining = wanted
+        var found: [CGWindowID: AXUIElement] = [:]
+        var elementID = cursor
+        var tries: UInt64 = 0
+        var token = Data(count: 20)
+        token.replaceSubrange(0..<4, with: withUnsafeBytes(of: pid) { Data($0) })
+        token.replaceSubrange(8..<12, with: withUnsafeBytes(of: Int32(0x636f_636f)) { Data($0) })
+        while !remaining.isEmpty, tries < bruteForceLimit, Date() < deadline {
+            token.replaceSubrange(12..<20, with: withUnsafeBytes(of: elementID) { Data($0) })
+            if let element = _AXUIElementCreateWithRemoteToken(token as CFData)?.takeRetainedValue(),
+               let id = windowID(of: element), remaining.remove(id) != nil {
+                found[id] = element
+            }
+            elementID = (elementID + 1) % bruteForceLimit
+            tries += 1
+        }
+        return (found, elementID)
     }
 
     /// Whether the app is the one in front.

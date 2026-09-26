@@ -26,7 +26,6 @@ final class SwitcherPanel: NSPanel {
     private let emptyLabel = NSTextField(labelWithString: "No matching windows")
     private var cells: [SwitcherCell] = []
     private var selectedIndex = 0
-    private var captureTask: Task<Void, Never>?
 
     init() {
         super.init(
@@ -90,8 +89,7 @@ final class SwitcherPanel: NSPanel {
         on screen: NSScreen?
     ) {
         let wasVisible = isVisible
-        captureTask?.cancel()
-        captureTask = nil
+        thumbnails.stop()
         if style != .thumbnails || !ScreenRecordingPermission.isGranted {
             // No screen contents are kept beyond what the style and the permission allow.
             thumbnails.clear()
@@ -119,8 +117,10 @@ final class SwitcherPanel: NSPanel {
         case .appIcons:
             layout = IconCell.layout(for: windows, availableWidth: available.width, appearance: appearance)
         case .thumbnails:
+            // The selected window's title goes under the grid; leave room for it.
+            let gridArea = CGSize(width: available.width, height: available.height - Self.titleBelowHeight)
             (layout, thumbnailSize) = ThumbnailCell.layout(
-                for: windows, available: available, thumbnails: thumbnails, appearance: appearance
+                for: windows, available: gridArea, thumbnails: thumbnails, appearance: appearance
             )
         }
         cells = layout.cells
@@ -181,7 +181,7 @@ final class SwitcherPanel: NSPanel {
         if let thumbnailSize {
             let scale = screen?.backingScaleFactor ?? 2
             let maxPixelSize = CGSize(width: thumbnailSize.width * scale, height: thumbnailSize.height * scale)
-            captureTask = thumbnails.capture(windows, selectedIndex: selectedIndex, maxPixelSize: maxPixelSize) { [weak self] index, image in
+            thumbnails.capture(windows, selectedIndex: selectedIndex, maxPixelSize: maxPixelSize) { [weak self] index, image in
                 guard let self, let cell = self.cells[safe: index] as? ThumbnailCell else { return }
                 cell.setPreview(image)
             }
@@ -218,8 +218,7 @@ final class SwitcherPanel: NSPanel {
     }
 
     override func orderOut(_ sender: Any?) {
-        captureTask?.cancel()
-        captureTask = nil
+        thumbnails.stop()
         super.orderOut(sender)
     }
 

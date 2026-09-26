@@ -26,6 +26,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        // A shortcut recorder still waiting for keys must not keep waiting.
+        window?.makeFirstResponder(nil)
         // Hand focus back to the app you were in. Otherwise SpaceTab stays the
         // active app with no window, and keys you press go nowhere.
         if NSApp.isActive {

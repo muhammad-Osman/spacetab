@@ -140,6 +140,10 @@ The script signs the app ad hoc, and macOS treats each changed ad hoc build as a
 
 **You need:** Xcode 16 or later and macOS 14 or later.
 
+### Releasing
+
+`scripts/release.sh <version>` sets the version, builds `build/SpaceTab-<version>.dmg`, updates the Homebrew cask in `packaging/homebrew/`, and commits and tags. Add `--publish` to push, create the GitHub release and update the tap. Set `SIGN_IDENTITY` to a Developer ID certificate and `NOTARY_PROFILE` to a `notarytool` keychain profile for a notarized build.
+
 ---
 
 ## How it works

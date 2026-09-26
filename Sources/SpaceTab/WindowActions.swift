@@ -21,37 +21,32 @@ enum WindowAction: Sendable {
         }
     }
 
-    /// Performs the action. Accessibility calls wait for the app, so call it
+    /// Performs the action and returns whether the app took it. For minimize
+    /// and hide, `restoring` means the opposite: bring the window back or
+    /// show the app again. Accessibility calls wait for the app, so call it
     /// off the main thread.
-    func perform(on window: WindowInfo) {
+    func perform(on window: WindowInfo, restoring: Bool) -> Bool {
         let element = window.element ?? AX.windows(of: window.pid).windows?.first { AX.windowID(of: $0) == window.id }
         switch self {
         case .close:
             // Pressing the close button lets the app ask to save changes.
-            if let element, let button = AX.element(kAXCloseButtonAttribute, of: element) {
-                _ = AXUIElementPerformAction(button, kAXPressAction as CFString)
-            }
+            guard let element, let button = AX.element(kAXCloseButtonAttribute, of: element) else { return false }
+            return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
         case .minimize:
-            if let element {
-                let isMinimized = (AX.value(kAXMinimizedAttribute, of: element) as? Bool) ?? false
-                _ = AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, (!isMinimized) as CFBoolean)
-            }
+            guard let element else { return false }
+            return AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, (!restoring) as CFBoolean) == .success
         case .fullScreen:
-            if let element {
-                let attribute = "AXFullScreen" as CFString
-                let isFullScreen = (AX.value("AXFullScreen", of: element) as? Bool) ?? false
-                _ = AXUIElementSetAttributeValue(element, attribute, (!isFullScreen) as CFBoolean)
-            }
+            guard let element else { return false }
+            let isFullScreen = (AX.value("AXFullScreen", of: element) as? Bool) ?? false
+            return AXUIElementSetAttributeValue(element, "AXFullScreen" as CFString, (!isFullScreen) as CFBoolean) == .success
         case .quitApp:
-            let pid = window.pid
-            DispatchQueue.main.async {
-                NSRunningApplication(processIdentifier: pid)?.terminate()
+            return DispatchQueue.main.sync {
+                NSRunningApplication(processIdentifier: window.pid)?.terminate() ?? false
             }
         case .hideApp:
-            let pid = window.pid
-            DispatchQueue.main.async {
-                guard let app = NSRunningApplication(processIdentifier: pid) else { return }
-                _ = app.isHidden ? app.unhide() : app.hide()
+            return DispatchQueue.main.sync {
+                guard let app = NSRunningApplication(processIdentifier: window.pid) else { return false }
+                return restoring ? app.unhide() : app.hide()
             }
         }
     }

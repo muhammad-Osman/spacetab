@@ -64,6 +64,9 @@ final class SwitcherController {
     /// Bumped for each switch and each new open or cancel, so only the latest
     /// switch releases held keys.
     private var switchCount = 0
+    /// While searching, clicking elsewhere or switching apps ends the search.
+    private var searchActivationToken: NSObjectProtocol?
+    private var searchClickMonitor: Any?
 
     init(history: WindowHistory) {
         self.history = history
@@ -104,7 +107,11 @@ final class SwitcherController {
 
     /// Handles one keyboard event. Returns `true` to swallow it.
     func handle(_ type: CGEventType, _ event: CGEvent) -> Bool {
-        if event.getIntegerValueField(.eventSourceUserData) == KeyHold.replayTag || ShortcutSettings.isRecording {
+        if event.getIntegerValueField(.eventSourceUserData) == KeyHold.replayTag {
+            return false
+        }
+        if ShortcutSettings.isRecording, NSApp.isActive {
+            // The Settings window is waiting for a key; let it have every key.
             return false
         }
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
@@ -209,18 +216,31 @@ final class SwitcherController {
         case .loading:
             handleNavigationKey(keyCode)
         case .open:
-            if !handleNavigationKey(keyCode), !flags.contains(.maskCommand), !flags.contains(.maskControl),
-               let character = KeyTranslator.character(keyCode: keyCode, shift: flags.contains(.maskShift)) {
-                if character == "/" {
-                    startSearch()
-                } else if let action = WindowAction(character: character) {
-                    perform(action)
-                }
+            if handleNavigationKey(keyCode) { break }
+            // Keys with a modifier beyond the shortcut's own are something else.
+            guard extraModifiers(in: flags, keyCode: keyCode).isEmpty else { break }
+            let characters = Self.characters(keyCode: keyCode, shift: flags.contains(.maskShift))
+            if characters.contains("/") {
+                startSearch()
+            } else if let action = characters.lazy.compactMap({ WindowAction(character: $0) }).first {
+                perform(action)
             }
         case .searching(let query, _):
-            handleSearchKey(keyCode, flags: flags, query: query)
+            return handleSearchKey(keyCode, flags: flags, query: query)
         }
         return true
+    }
+
+    /// The modifiers held beyond the ones the active shortcut needs.
+    private func extraModifiers(in flags: CGEventFlags, keyCode: Int64) -> Shortcut.Modifiers {
+        Shortcut.Modifiers(flags: flags, keyCode: keyCode).subtracting(activeShortcut?.modifiers ?? [])
+    }
+
+    /// What the key types on the current layout and, on a non-Latin layout,
+    /// on the Latin one too, so W still closes a window on a Cyrillic keyboard.
+    private static func characters(keyCode: Int64, shift: Bool) -> [String] {
+        [KeyTranslator.character(keyCode: keyCode, shift: shift), KeyTranslator.asciiCharacter(keyCode: keyCode, shift: shift)]
+            .compactMap { $0 }
     }
 
     /// Arrow keys and Esc, which work the same whenever the switcher is open.
@@ -251,7 +271,16 @@ final class SwitcherController {
         }
     }
 
-    private func handleSearchKey(_ keyCode: Int64, flags: CGEventFlags, query: String) {
+    /// Returns `true` to swallow the key.
+    private func handleSearchKey(_ keyCode: Int64, flags: CGEventFlags, query: String) -> Bool {
+        let extra = extraModifiers(in: flags, keyCode: keyCode)
+        if extra.contains(.command) || extra.contains(.control) {
+            // A shortcut for something else, such as ⌘ Tab or ⌘ Space: leave
+            // the search and let it through.
+            swallowedKeys.remove(keyCode)
+            cancel()
+            return false
+        }
         switch keyCode {
         case KeyCode.tab:
             move(by: flags.contains(.maskShift) ? -1 : 1)
@@ -260,20 +289,19 @@ final class SwitcherController {
         case KeyCode.delete:
             setQuery(String(query.dropLast()))
         default:
-            if handleNavigationKey(keyCode) { return }
-            guard
-                !flags.contains(.maskCommand), !flags.contains(.maskControl),
-                let character = KeyTranslator.character(keyCode: keyCode, shift: flags.contains(.maskShift))
-            else { return }
-            setQuery(query + character)
+            if handleNavigationKey(keyCode) { break }
+            if let character = KeyTranslator.character(keyCode: keyCode, shift: flags.contains(.maskShift)) {
+                setQuery(query + character)
+            }
         }
+        return true
     }
 
     private func handleKeyUp(keyCode: Int64, flags: CGEventFlags) -> Bool {
         if swallowedKeys.remove(keyCode) != nil {
             return true
         }
-        if isCapturingKeys, !isSearching, !flags.contains(.maskAlternate) {
+        if isCapturingKeys, !isSearching, let activeShortcut, !activeShortcut.isHeld(in: flags) {
             cancel()
         }
         return false
@@ -290,6 +318,32 @@ final class SwitcherController {
         matching = windows
         phase = .searching(query: "", selection: SwitcherSelection(count: matching.count, index: 0))
         showPanel()
+        // Without a modifier held, nothing else ends the search: watch for
+        // the user moving on to another app or clicking outside the switcher.
+        searchActivationToken = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                if self?.isSearching == true { self?.cancel() }
+            }
+        }
+        // Clicks on the switcher itself don't reach a global monitor.
+        searchClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+            MainActor.assumeIsolated {
+                if self?.isSearching == true { self?.cancel() }
+            }
+        }
+    }
+
+    private func stopWatchingSearch() {
+        if let searchActivationToken {
+            NSWorkspace.shared.notificationCenter.removeObserver(searchActivationToken)
+        }
+        searchActivationToken = nil
+        if let searchClickMonitor {
+            NSEvent.removeMonitor(searchClickMonitor)
+        }
+        searchClickMonitor = nil
     }
 
     private func setQuery(_ query: String) {
@@ -299,14 +353,30 @@ final class SwitcherController {
         showPanel()
     }
 
-    /// Runs the action on the selected window, and updates the list to match
-    /// without asking every app again.
+    /// Runs the action on the selected window. Once the app has taken it,
+    /// the list is updated to match without asking every app again.
     private func perform(_ action: WindowAction) {
         guard let window = selectedWindow else { return }
-        actionQueue.async {
-            action.perform(on: window)
+        let restoring = switch action {
+        case .minimize: window.state == .minimized
+        case .hideApp: NSRunningApplication(processIdentifier: window.pid)?.isHidden == true
+        default: false
         }
+        let generation = self.generation
+        actionQueue.async {
+            let taken = action.perform(on: window, restoring: restoring)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.generation == generation else { return }
+                guard taken else {
+                    NSSound.beep()
+                    return
+                }
+                self.apply(action, to: window, restoring: restoring)
+            }
+        }
+    }
 
+    private func apply(_ action: WindowAction, to window: WindowInfo, restoring: Bool) {
         func placement(_ state: WindowInfo.State) -> WindowPlacement {
             state == .minimized ? options.minimizedWindows : options.hiddenAppWindows
         }
@@ -316,9 +386,9 @@ final class SwitcherController {
         case .quitApp:
             windows.removeAll { $0.pid == window.pid }
         case .minimize:
-            toggleState(.minimized, placement: placement(.minimized)) { $0.id == window.id }
+            toggleState(.minimized, restoring: restoring, placement: placement(.minimized)) { $0.id == window.id }
         case .hideApp:
-            toggleState(.appHidden, placement: placement(.appHidden)) { $0.pid == window.pid }
+            toggleState(.appHidden, restoring: restoring, placement: placement(.appHidden)) { $0.pid == window.pid }
         case .fullScreen:
             return
         }
@@ -341,26 +411,33 @@ final class SwitcherController {
         showPanel()
     }
 
-    /// Windows matching `matches` become `state`, or normal again if they were.
-    private func toggleState(_ state: WindowInfo.State, placement: WindowPlacement, matches: (WindowInfo) -> Bool) {
-        let restoring = windows.first(where: matches)?.state == state
-        let newState: WindowInfo.State = restoring ? .normal : state
+    /// Windows matching `matches` become `state`, or normal again when
+    /// `restoring`. Minimized windows stay minimized when their app is hidden or shown.
+    private func toggleState(
+        _ state: WindowInfo.State,
+        restoring: Bool,
+        placement: WindowPlacement,
+        matches: @escaping (WindowInfo) -> Bool
+    ) {
+        let affected: (WindowInfo) -> Bool = { window in
+            matches(window) && (state == .minimized || window.state != .minimized)
+        }
         if !restoring, placement == .hidden {
-            windows.removeAll(where: matches)
+            windows.removeAll(where: affected)
             return
         }
-        var changed: [WindowInfo] = []
+        var moved: [WindowInfo] = []
         windows = windows.compactMap { window in
-            guard matches(window) else { return window }
+            guard affected(window) else { return window }
             var window = window
-            window.state = newState
+            window.state = restoring ? .normal : state
             if !restoring, placement == .atEnd {
-                changed.append(window)
+                moved.append(window)
                 return nil
             }
             return window
         }
-        windows += changed
+        windows += moved
     }
 
     private var listedWindows: [WindowInfo] {
@@ -533,6 +610,7 @@ final class SwitcherController {
     }
 
     private func close() {
+        stopWatchingSearch()
         phase = .idle
         activeShortcut = nil
         windows = []

@@ -42,12 +42,16 @@ struct Shortcut: Codable, Equatable, Identifiable, Sendable {
             self.rawValue = rawValue
         }
 
-        init(flags: CGEventFlags) {
+        /// The modifiers held in `flags`. Arrow, navigation and function
+        /// keys always carry the Fn flag, so for them it doesn't count.
+        init(flags: CGEventFlags, keyCode: Int64? = nil) {
             var modifiers = Modifiers()
             if flags.contains(.maskControl) { modifiers.insert(.control) }
             if flags.contains(.maskAlternate) { modifiers.insert(.option) }
             if flags.contains(.maskCommand) { modifiers.insert(.command) }
-            if flags.contains(.maskSecondaryFn) { modifiers.insert(.function) }
+            if flags.contains(.maskSecondaryFn), !(keyCode.map(Shortcut.keysThatCarryFn.contains) ?? false) {
+                modifiers.insert(.function)
+            }
             self = modifiers
         }
 
@@ -60,6 +64,12 @@ struct Shortcut: Codable, Equatable, Identifiable, Sendable {
             return text
         }
     }
+
+    /// Keys whose events carry the Fn flag whether or not the Globe key is held.
+    static let keysThatCarryFn: Set<Int64> = [
+        123, 124, 125, 126, 115, 116, 117, 119, 121, 114,
+        122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90,
+    ]
 
     var id = UUID()
     var keyCode: Int64
@@ -75,12 +85,13 @@ struct Shortcut: Codable, Equatable, Identifiable, Sendable {
     /// Whether this key press is the shortcut. Shift is allowed (it means
     /// backwards); any other extra modifier means a different shortcut.
     func matches(keyCode: Int64, flags: CGEventFlags) -> Bool {
-        keyCode == self.keyCode && Modifiers(flags: flags) == modifiers
+        keyCode == self.keyCode && Modifiers(flags: flags, keyCode: keyCode) == modifiers
     }
 
-    /// Whether every modifier of the shortcut is held.
+    /// Whether every modifier of the shortcut is held. The Fn key doesn't
+    /// count: macOS doesn't report it reliably, so it can't end the switcher.
     func isHeld(in flags: CGEventFlags) -> Bool {
-        Modifiers(flags: flags).isSuperset(of: modifiers)
+        Modifiers(flags: flags).isSuperset(of: modifiers.subtracting(.function))
     }
 
     var displayText: String {
