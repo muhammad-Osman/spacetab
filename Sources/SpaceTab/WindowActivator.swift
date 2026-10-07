@@ -14,8 +14,9 @@ final class WindowActivator: @unchecked Sendable {
     /// another desktop has to wait for the desktop to slide in.
     private static let minimizedCheckDelays: [TimeInterval] = [0.1, 0.15, 0.25, 0.3]
     private static let otherDesktopCheckDelays: [TimeInterval] = [0.15, 0.25, 0.35, 0.5]
-    /// How long to look for the element of a window on another desktop.
-    private static let bruteForceBudget: TimeInterval = 0.3
+    /// How long the desktop takes to start switching, before the window's
+    /// app lists the window.
+    private static let desktopSwitchDelay: UInt32 = 200_000
     /// How long to wait for a first answer before treating the app as hung.
     private static let probeTimeout: Float = 0.1
 
@@ -47,6 +48,13 @@ final class WindowActivator: @unchecked Sendable {
                 }
                 return
             }
+            if window.state == .otherDesktop {
+                // Switches to the window's desktop. Once there, the app lists
+                // the window, so an element can be found even if the listing
+                // didn't have one.
+                Spaces.bringToFront(pid: window.pid, windowID: window.id)
+                usleep(Self.desktopSwitchDelay)
+            }
             // A window listed while its app was busy has no element yet; the
             // app has often recovered by now.
             let element = window.element ?? Self.findElement(of: window)
@@ -72,12 +80,7 @@ final class WindowActivator: @unchecked Sendable {
     }
 
     private static func findElement(of window: WindowInfo) -> AXUIElement? {
-        if let element = AX.windows(of: window.pid).windows?.first(where: { AX.windowID(of: $0) == window.id }) {
-            return element
-        }
-        guard window.state == .otherDesktop else { return nil }
-        // Accessibility leaves windows on other desktops out of the list.
-        return AX.windowsByBruteForce(pid: window.pid, wanted: [window.id], from: 0, budget: bruteForceBudget).found[window.id]
+        AX.windows(of: window.pid).windows?.first { AX.windowID(of: $0) == window.id }
     }
 
     private static func bringForward(_ window: WindowInfo, element: AXUIElement?) {

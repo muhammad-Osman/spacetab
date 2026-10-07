@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 
 private enum KeyCode {
     static let tab: Int64 = 48
@@ -38,6 +39,9 @@ final class SwitcherController {
     private let lister = WindowLister()
     private let activator = WindowActivator()
     private let keyHold = KeyHold()
+    /// Opens the switcher when an app has secure input on and the tap sees no keys.
+    private let hotKeyFallback = HotKeyFallback()
+    private var recordingToken: NSObjectProtocol?
     private let listingQueue = DispatchQueue(label: "SpaceTab.listing", qos: .userInteractive)
     private let actionQueue = DispatchQueue(label: "SpaceTab.actions", qos: .userInteractive)
 
@@ -73,7 +77,23 @@ final class SwitcherController {
         shortcutsToken = NotificationCenter.default.addObserver(
             forName: ShortcutSettings.changed, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.shortcuts = ShortcutSettings.load() }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.shortcuts = ShortcutSettings.load()
+                self.hotKeyFallback.update(shortcuts: self.shortcuts)
+            }
+        }
+        recordingToken = NotificationCenter.default.addObserver(
+            forName: ShortcutSettings.recordingChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            // A hot key would take the keys the recorder is waiting for.
+            MainActor.assumeIsolated { self?.hotKeyFallback.setPaused(ShortcutSettings.isRecording) }
+        }
+        hotKeyFallback.onShortcut = { [weak self] shortcut, backwards in
+            self?.shortcutPressed(shortcut, backwards: backwards)
+        }
+        hotKeyFallback.onNavigation = { [weak self] keyCode in
+            self?.handleNavigationKey(keyCode)
         }
         panel.onHover = { [weak self] index in
             self?.select(index)
@@ -83,11 +103,25 @@ final class SwitcherController {
             self?.commit()
         }
         keyHold.onSystemShortcut = { [weak self] in
-            // Whatever the shortcut opened is what you use now; stop
-            // re-focusing the window you switched to.
+            // Whatever the shortcut opened is what you use now: stop
+            // re-focusing the window you switched to, and don't switch at
+            // all if the list hadn't even arrived.
             guard let self else { return }
             self.switchCount += 1
             self.activator.cancelChecks()
+            if case .loading = self.phase {
+                self.cancel()
+            }
+        }
+    }
+
+    /// Hot keys stand in for the event tap while an app has secure input
+    /// on. They are registered only while the tap runs.
+    func setHotKeysEnabled(_ enabled: Bool) {
+        if enabled {
+            hotKeyFallback.start(shortcuts: shortcuts)
+        } else {
+            hotKeyFallback.stop()
         }
     }
 
@@ -193,15 +227,7 @@ final class SwitcherController {
         }
         if let shortcut = shortcut(matching: keyCode, flags: flags) {
             swallowedKeys.insert(keyCode)
-            let backwards = flags.contains(.maskShift)
-            if isCapturingKeys {
-                // While open, only the shortcut that opened the switcher moves.
-                if shortcut.id == activeShortcut?.id {
-                    move(by: backwards ? -1 : 1)
-                }
-            } else {
-                open(shortcut, backwards: backwards)
-            }
+            shortcutPressed(shortcut, backwards: flags.contains(.maskShift))
             return true
         }
         guard isCapturingKeys else {
@@ -231,9 +257,25 @@ final class SwitcherController {
         return true
     }
 
-    /// The modifiers held beyond the ones the active shortcut needs.
+    /// Opens the switcher, or moves the selection when it is open already.
+    private func shortcutPressed(_ shortcut: Shortcut, backwards: Bool) {
+        if isCapturingKeys {
+            // While open, only the shortcut that opened the switcher moves.
+            if shortcut.id == activeShortcut?.id {
+                move(by: backwards ? -1 : 1)
+            }
+        } else {
+            open(shortcut, backwards: backwards)
+        }
+    }
+
+    /// The modifiers held beyond the ones the active shortcut needs. Once
+    /// the shortcut's own modifiers were let go (while searching), every
+    /// modifier counts.
     private func extraModifiers(in flags: CGEventFlags, keyCode: Int64) -> Shortcut.Modifiers {
-        Shortcut.Modifiers(flags: flags, keyCode: keyCode).subtracting(activeShortcut?.modifiers ?? [])
+        let held = Shortcut.Modifiers(flags: flags, keyCode: keyCode)
+        guard let activeShortcut, activeShortcut.isHeld(in: flags) else { return held }
+        return held.subtracting(activeShortcut.modifiers)
     }
 
     /// What the key types on the current layout and, on a non-Latin layout,
@@ -322,9 +364,13 @@ final class SwitcherController {
         // the user moving on to another app or clicking outside the switcher.
         searchActivationToken = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-        ) { [weak self] _ in
+        ) { [weak self] note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             MainActor.assumeIsolated {
-                if self?.isSearching == true { self?.cancel() }
+                guard let self, self.isSearching else { return }
+                // A switch made just before may still be landing; that's not the user leaving.
+                if let pid = app?.processIdentifier, self.openedFromPIDs.contains(pid) { return }
+                self.cancel()
             }
         }
         // Clicks on the switcher itself don't reach a global monitor.
@@ -353,8 +399,11 @@ final class SwitcherController {
         showPanel()
     }
 
-    /// Runs the action on the selected window. Once the app has taken it,
-    /// the list is updated to match without asking every app again.
+    /// Runs the action on the selected window and updates the list to match
+    /// without asking every app again. Closing and quitting leave the list
+    /// at once (so letting go of the modifiers right after doesn't switch to
+    /// the window being closed) and come back if the app refused; the others
+    /// wait for the app's answer.
     private func perform(_ action: WindowAction) {
         guard let window = selectedWindow else { return }
         let restoring = switch action {
@@ -363,17 +412,50 @@ final class SwitcherController {
         default: false
         }
         let generation = self.generation
+        let isRemoval = action == .close || action == .quitApp
+        let before = (windows: windows, index: currentIndex)
+        if isRemoval {
+            apply(action, to: window, restoring: restoring)
+        }
         actionQueue.async {
             let taken = action.perform(on: window, restoring: restoring)
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.generation == generation else { return }
-                guard taken else {
+                // Only while the switcher still shows a list; after a switch there is nothing to update.
+                guard let self, self.generation == generation, self.isCapturingKeys else { return }
+                switch (taken, isRemoval) {
+                case (true, true):
+                    break
+                case (true, false):
+                    self.apply(action, to: window, restoring: restoring)
+                case (false, true):
                     NSSound.beep()
-                    return
+                    self.windows = before.windows
+                    self.reselect(index: before.index)
+                case (false, false):
+                    NSSound.beep()
                 }
-                self.apply(action, to: window, restoring: restoring)
             }
         }
+    }
+
+    /// Shows the list again after it changed, keeping the selection near `index`.
+    private func reselect(index: Int) {
+        if case .searching(let query, _) = phase {
+            matching = WindowSearch.filter(windows, query: query)
+        }
+        guard !listedWindows.isEmpty else {
+            cancel()
+            return
+        }
+        switch phase {
+        case .open:
+            phase = .open(SwitcherSelection(count: listedWindows.count, index: index))
+        case .searching(let query, _):
+            phase = .searching(query: query, selection: SwitcherSelection(count: matching.count, index: index))
+        default:
+            return
+        }
+        showPanel()
     }
 
     private func apply(_ action: WindowAction, to window: WindowInfo, restoring: Bool) {
@@ -392,23 +474,7 @@ final class SwitcherController {
         case .fullScreen:
             return
         }
-        if case .searching(let query, _) = phase {
-            matching = WindowSearch.filter(windows, query: query)
-        }
-        guard !listedWindows.isEmpty else {
-            cancel()
-            return
-        }
-        let index = currentIndex
-        switch phase {
-        case .open:
-            phase = .open(SwitcherSelection(count: listedWindows.count, index: index))
-        case .searching(let query, _):
-            phase = .searching(query: query, selection: SwitcherSelection(count: matching.count, index: index))
-        default:
-            return
-        }
-        showPanel()
+        reselect(index: currentIndex)
     }
 
     /// Windows matching `matches` become `state`, or normal again when
@@ -477,6 +543,10 @@ final class SwitcherController {
         let generation = self.generation
         activeShortcut = shortcut
         phase = .loading(backwards: backwards, moves: 0, released: false)
+        if IsSecureEventInputEnabled() {
+            // The tap won't see the arrow keys or Esc; hot keys will.
+            hotKeyFallback.switcherOpened(modifiers: shortcut.modifiers)
+        }
 
         let ranks = history.ranks()
         let pendingSwitch = history.pendingSwitch()
@@ -611,6 +681,7 @@ final class SwitcherController {
 
     private func close() {
         stopWatchingSearch()
+        hotKeyFallback.switcherClosed()
         phase = .idle
         activeShortcut = nil
         windows = []

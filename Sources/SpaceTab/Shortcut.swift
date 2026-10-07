@@ -120,7 +120,10 @@ enum ShortcutSettings {
     /// True while a recorder in Settings waits for a key. The event tap then
     /// lets every key through, so pressing ⌥ Tab records it instead of
     /// opening the switcher.
-    @MainActor static var isRecording = false
+    @MainActor static var isRecording = false {
+        didSet { NotificationCenter.default.post(name: recordingChanged, object: nil) }
+    }
+    static let recordingChanged = Notification.Name("SpaceTabShortcutRecordingChanged")
     /// Posted after the shortcuts change.
     static let changed = Notification.Name("SpaceTabShortcutsChanged")
 

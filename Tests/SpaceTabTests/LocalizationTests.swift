@@ -25,8 +25,8 @@ final class LocalizationTests: XCTestCase {
     func testEveryLanguageHasEveryEnglishKeyAndNoOthers() throws {
         let english = try strings("en")
         XCTAssertGreaterThan(english.count, 80)
-        for key in english.keys {
-            XCTAssertEqual(english[key], key, "English maps each key to itself: \(key)")
+        for (key, value) in english {
+            XCTAssertFalse(value.isEmpty, "English: empty text for \(key)")
         }
 
         let languages = try FileManager.default.contentsOfDirectory(atPath: localizationDirectory.path)

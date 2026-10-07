@@ -43,6 +43,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.statusItem.isVisible = AppSettings.showMenuBarIcon }
         }
+        NotificationCenter.default.addObserver(
+            forName: .updateAvailabilityChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.showUpdateBadge() }
+        }
         // Not shown, since SpaceTab has no menu bar of its own, but gives the
         // Settings window ⌘W.
         NSApp.mainMenu = Self.makeMainMenu()
@@ -83,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startIfPermitted() -> Bool {
         guard AccessibilityPermission.isGranted(prompt: false), hotKeys.start() else { return false }
         switcher.reset()
+        switcher.setHotKeysEnabled(true)
         // Windows on screen now are more recent than anything remembered from
         // before a permission outage.
         history.promote(WindowLister.onScreenWindowIDs())
@@ -128,6 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         trustTimer?.invalidate()
         trustTimer = nil
         switcher.reset()
+        switcher.setHotKeysEnabled(false)
         hotKeys.stop()
         focusTracker.stop()
         waitForPermission()
@@ -153,7 +160,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        if updater.isAvailable {
+        if let version = updater.availableUpdate {
+            menu.addItem(item(String(localized: "Update to \(version)…"), #selector(checkForUpdates)))
+        } else if updater.isAvailable {
             menu.addItem(item(String(localized: "Check for Updates…"), #selector(checkForUpdates)))
         }
         menu.addItem(item(String(localized: "Settings…"), #selector(openSettings), key: ","))
@@ -204,6 +213,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func checkForUpdates() {
         updater.checkForUpdates()
+    }
+
+    /// A dot on the menu bar icon while an update waits to be looked at.
+    private func showUpdateBadge() {
+        let name = updater.availableUpdate == nil ? "rectangle.on.rectangle" : "rectangle.on.rectangle.badge.plus"
+        statusItem.button?.image = NSImage(systemSymbolName: name, accessibilityDescription: "SpaceTab")
     }
 
     @objc private func openAccessibilitySettings() {

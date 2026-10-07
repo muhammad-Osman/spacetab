@@ -74,7 +74,8 @@ struct GridLayout: Equatable {
         let column = index % columns
         let cellsInRow = row == rows - 1 ? count - row * columns : columns
         let rowWidth = CGFloat(cellsInRow) * cellSize.width + CGFloat(cellsInRow - 1) * spacing
-        let inset = (contentSize.width - rowWidth) / 2
+        // Whole points, so a centered short row isn't drawn between pixels.
+        let inset = ((contentSize.width - rowWidth) / 2).rounded(.down)
         return CGRect(
             x: inset + CGFloat(column) * (cellSize.width + spacing),
             y: CGFloat(row) * (cellSize.height + spacing),

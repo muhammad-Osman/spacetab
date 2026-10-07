@@ -135,7 +135,7 @@ final class WindowLister: @unchecked Sendable {
 
         if options.allDesktops || options.minimizedWindows != .hidden || options.hiddenAppWindows != .hidden {
             let onScreenIDs = Set(onScreen.compactMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value })
-            windows += offScreenWindows(excluding: onScreenIDs, options: options, lookups: &lookups, fresh: &fresh)
+            windows += offScreenWindows(excluding: onScreenIDs, options: options, lookups: &lookups)
         }
 
         updateCache(lookups: lookups, fresh: fresh, rejected: rejected, examined: examined)
@@ -184,8 +184,7 @@ final class WindowLister: @unchecked Sendable {
     private func offScreenWindows(
         excluding onScreenIDs: Set<CGWindowID>,
         options: ListingOptions,
-        lookups: inout [pid_t: Lookup],
-        fresh: inout [pid_t: [CGWindowID: CachedWindow]]
+        lookups: inout [pid_t: Lookup]
     ) -> [WindowInfo] {
         guard let currentSpaces = Spaces.currentSpaceIDs() else { return [] }
         let entries = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
@@ -233,45 +232,71 @@ final class WindowLister: @unchecked Sendable {
             }
         }
 
-        let deadline = Date().addingTimeInterval(Self.bruteForceBudget)
-        for (pid, candidates) in unreported {
-            var found: [CGWindowID: AXUIElement] = [:]
+        // Apps that stopped answering get no more questions this time.
+        let apps = unreported.keys.filter { pid in
+            if case .busy = lookups[pid] { return false }
+            return true
+        }
+        // Every app gets a share of the time, so one app with many windows
+        // can't keep the others from ever being found.
+        let budgetPerApp = Self.bruteForceBudget / Double(max(apps.count, 1))
+        for pid in apps {
+            let candidates = unreported[pid]!
             var missing = Set<CGWindowID>()
-            for candidate in candidates {
-                if let cached = lastKnown[pid]?[candidate.id] {
-                    found[candidate.id] = cached.element
-                } else {
-                    missing.insert(candidate.id)
-                }
+            for candidate in candidates where lastKnown[pid]?[candidate.id] == nil {
+                missing.insert(candidate.id)
             }
-            if !missing.isEmpty, Date() < deadline {
+            if !missing.isEmpty {
                 let result = AX.windowsByBruteForce(
-                    pid: pid, wanted: missing, from: bruteForceCursor[pid] ?? 0, budget: deadline.timeIntervalSinceNow
+                    pid: pid, wanted: missing, from: bruteForceCursor[pid] ?? 0, budget: budgetPerApp
                 )
                 bruteForceCursor[pid] = result.cursor
-                found.merge(result.found) { $1 }
+                // Remembered right away: the element is the hard part to find.
+                for (id, element) in result.found {
+                    lastKnown[pid, default: [:]][id] = CachedWindow(element: element, title: "")
+                }
             }
             for candidate in candidates {
-                if let element = found[candidate.id], let attributes = AX.windowAttributes(of: element) {
-                    fresh[pid, default: [:]][candidate.id] = CachedWindow(element: element, title: attributes.title)
+                guard let cached = lastKnown[pid]?[candidate.id] else {
+                    // Not found yet. Listed only with a title from CoreGraphics
+                    // (there is one with Screen Recording permission), so
+                    // sheets and popups don't show up as nameless entries.
+                    if !candidate.name.isEmpty {
+                        windows.append(WindowInfo(
+                            id: candidate.id,
+                            pid: pid,
+                            appName: candidate.app.localizedName ?? "",
+                            title: candidate.name,
+                            icon: candidate.app.icon,
+                            element: nil,
+                            state: .otherDesktop
+                        ))
+                    }
+                    continue
+                }
+                switch AX.readWindowAttributes(of: cached.element) {
+                case .attributes(let attributes):
+                    lastKnown[pid]?[candidate.id] = CachedWindow(element: cached.element, title: attributes.title)
                     if let window = offScreenWindow(
-                        id: candidate.id, bounds: candidate.bounds, app: candidate.app, element: element,
+                        id: candidate.id, bounds: candidate.bounds, app: candidate.app, element: cached.element,
                         attributes: attributes, onCurrentDesktop: false, options: options
                     ) {
                         windows.append(window)
                     }
-                } else {
-                    // Not found yet: listed anyway, with the title CoreGraphics
-                    // gives (only with Screen Recording permission).
+                case .busy:
+                    // The app is busy: use what was known last time.
                     windows.append(WindowInfo(
                         id: candidate.id,
                         pid: pid,
                         appName: candidate.app.localizedName ?? "",
-                        title: candidate.name,
+                        title: cached.title,
                         icon: candidate.app.icon,
-                        element: nil,
+                        element: cached.element,
                         state: .otherDesktop
                     ))
+                case .gone:
+                    // The app rebuilt its accessibility tree; the window is found again next time.
+                    lastKnown[pid]?[candidate.id] = nil
                 }
             }
         }

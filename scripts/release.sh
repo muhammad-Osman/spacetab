@@ -28,6 +28,14 @@ if [ -n "$(git status --porcelain)" ]; then
     exit 1
 fi
 
+if [ "$PUBLISH" = "--publish" ] && [ -z "${SIGN_IDENTITY:-}" ]; then
+    # macOS ties the Accessibility and Screen Recording permissions to the
+    # signature, and an ad hoc signature changes with every build. Users
+    # would lose both permissions with every update.
+    echo "Set SIGN_IDENTITY to a Developer ID certificate before publishing." >&2
+    exit 1
+fi
+
 BUILD_NUMBER="$(( $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist) + 1 ))"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" -c "Set :CFBundleVersion $BUILD_NUMBER" Resources/Info.plist
 

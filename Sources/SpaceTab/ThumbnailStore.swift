@@ -23,9 +23,15 @@ final class ThumbnailStore {
     /// Least recently used first, to drop old previews when over the limit.
     private var recentOrder: [CGWindowID] = []
     private var content: (windows: [CGWindowID: SCWindow], date: Date)?
+    /// Windows being captured right now. A new round doesn't capture them
+    /// again; their picture goes to whatever cells are showing when it arrives.
+    private var inFlight = Set<CGWindowID>()
+    /// Where each window is in the cells shown now, and how to update them.
+    private var shownIndex: [CGWindowID: Int] = [:]
+    private var shownUpdate: ((Int, CGImage) -> Void)?
     /// Bumped by `stop()` and each `capture()`. Only the latest round starts
-    /// new captures and updates cells; results are kept whatever the round.
-    /// Read from capture tasks as well; a stale read there only delays a stop.
+    /// new captures. Read from capture tasks as well; a stale read there only
+    /// delays a stop.
     private nonisolated(unsafe) var round = 0
 
     func cached(_ id: CGWindowID) -> CGImage? {
@@ -47,6 +53,8 @@ final class ThumbnailStore {
     /// finish and are kept for later.
     func stop() {
         round += 1
+        shownUpdate = nil
+        shownIndex = [:]
     }
 
     /// Captures the on-screen windows among `windows`, the selected one
@@ -61,12 +69,17 @@ final class ThumbnailStore {
         guard ScreenRecordingPermission.isGranted else { return }
         round += 1
         let round = self.round
+        shownUpdate = update
+        shownIndex = Dictionary(
+            windows.enumerated().filter { $0.element.isOnScreen }.map { ($0.element.id, $0.offset) },
+            uniquingKeysWith: { first, _ in first }
+        )
 
         var targets: [(index: Int, id: CGWindowID)] = []
         for (index, window) in windows.enumerated() where window.isOnScreen {
             if let date = capturedAt[window.id], Date().timeIntervalSince(date) < Self.freshEnough, let image = images[window.id] {
                 update(index, image)
-            } else {
+            } else if !inFlight.contains(window.id) {
                 targets.append((index, window.id))
             }
         }
@@ -85,36 +98,43 @@ final class ThumbnailStore {
 
             guard let self, let capturable = await self.capturableWindows(for: targets.map(\.id)) else { return }
 
-            await withTaskGroup(of: (index: Int, id: CGWindowID, image: CGImage?).self) { group in
+            await withTaskGroup(of: (id: CGWindowID, image: CGImage?).self) { group in
                 var pending = targets.filter { capturable[$0.id] != nil }
-                func startNext() {
+                func startNext() async {
                     guard self.round == round, !pending.isEmpty else { return }
                     let target = pending.removeFirst()
                     let window = capturable[target.id]!
+                    await MainActor.run { _ = self.inFlight.insert(target.id) }
                     group.addTask {
                         let image = await Self.captureImage(of: window, maxPixelSize: maxPixelSize) { late in
-                            // Arrived after the watchdog gave up: still worth keeping.
-                            Task { @MainActor in self.store(late, for: target.id) }
+                            // Arrived after the watchdog gave up: still worth showing and keeping.
+                            Task { @MainActor in self.deliver(late, for: target.id) }
                         }
-                        return (target.index, target.id, image)
+                        return (target.id, image)
                     }
                 }
                 for _ in 0..<Self.maxConcurrentCaptures {
-                    startNext()
+                    await startNext()
                 }
                 for await result in group {
-                    if let image = result.image {
-                        await MainActor.run {
-                            // Kept even after the switcher closed, for when the window is minimized.
-                            self.store(image, for: result.id)
-                            if self.round == round {
-                                update(result.index, image)
-                            }
+                    await MainActor.run {
+                        self.inFlight.remove(result.id)
+                        if let image = result.image {
+                            self.deliver(image, for: result.id)
                         }
                     }
-                    startNext()
+                    await startNext()
                 }
             }
+        }
+    }
+
+    /// Keeps the picture (even after the switcher closed, for when the
+    /// window is minimized) and shows it in the cell that has the window now.
+    private func deliver(_ image: CGImage, for id: CGWindowID) {
+        store(image, for: id)
+        if let index = shownIndex[id] {
+            shownUpdate?(index, image)
         }
     }
 

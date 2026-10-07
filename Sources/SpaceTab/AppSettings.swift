@@ -124,7 +124,7 @@ enum AnimationSpeed: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .off: String(localized: "Off")
         case .fast: String(localized: "Fast")
-        case .normal: String(localized: "Normal")
+        case .normal: String(localized: "animation.normal", defaultValue: "Normal")
         }
     }
 

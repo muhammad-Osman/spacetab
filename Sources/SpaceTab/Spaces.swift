@@ -1,6 +1,27 @@
 import CoreGraphics
 import Foundation
 
+/// Private SkyLight call that brings one window of an app to the front, and
+/// with it the desktop the window is on. Loaded at runtime, so a macOS
+/// without it only loses this step.
+private typealias SetFrontProcessWithOptions = @convention(c) (
+    UnsafeMutablePointer<ProcessSerialNumber>, UInt32, UInt32
+) -> CGError
+private typealias GetProcessForPIDFunction = @convention(c) (pid_t, UnsafeMutablePointer<ProcessSerialNumber>) -> OSStatus
+
+private let setFrontProcessWithOptions: SetFrontProcessWithOptions? = {
+    guard
+        let handle = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY),
+        let symbol = dlsym(handle, "_SLPSSetFrontProcessWithOptions")
+    else { return nil }
+    return unsafeBitCast(symbol, to: SetFrontProcessWithOptions.self)
+}()
+
+private let getProcessForPID: GetProcessForPIDFunction? = {
+    guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "GetProcessForPID") else { return nil }
+    return unsafeBitCast(symbol, to: GetProcessForPIDFunction.self)
+}()
+
 // Private SkyLight functions, exported through CoreGraphics. macOS has no
 // public API for desktops (Spaces); every window manager uses these.
 @_silgen_name("CGSMainConnectionID")
@@ -30,6 +51,18 @@ enum Spaces {
             }
         }
         return ids.isEmpty ? nil : ids
+    }
+
+    /// Brings the window to the front of its app and switches to the desktop
+    /// it is on, the way a click in Mission Control does. Returns false when
+    /// the call isn't available.
+    @discardableResult
+    static func bringToFront(pid: pid_t, windowID: CGWindowID) -> Bool {
+        guard let setFrontProcessWithOptions, let getProcessForPID else { return false }
+        var psn = ProcessSerialNumber()
+        guard getProcessForPID(pid, &psn) == noErr else { return false }
+        let userGenerated: UInt32 = 0x200
+        return setFrontProcessWithOptions(&psn, windowID, userGenerated) == .success
     }
 
     /// The desktops a window is on. Minimized and hidden windows keep the

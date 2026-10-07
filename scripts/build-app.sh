@@ -21,8 +21,10 @@ designated_requirement() {
     codesign -d -r- "$1" 2>/dev/null | sed -n 's/^#* *designated => //p' || true
 }
 
-swift build -c "$CONFIG"
-BIN_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
+# One binary for Apple Silicon and Intel Macs.
+ARCHS=(--arch arm64 --arch x86_64)
+swift build -c "$CONFIG" "${ARCHS[@]}"
+BIN_DIR="$(swift build -c "$CONFIG" "${ARCHS[@]}" --show-bin-path)"
 
 if pgrep -x SpaceTab >/dev/null; then
     osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 || true

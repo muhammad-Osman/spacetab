@@ -46,31 +46,50 @@ enum AX {
         var isMinimized = false
     }
 
-    /// A window's subrole, title and minimized state, read in one call. Nil
-    /// when the app didn't answer in time.
-    static func windowAttributes(of element: AXUIElement) -> WindowAttributes? {
+    enum WindowAttributesResult {
+        case attributes(WindowAttributes)
+        /// The app didn't answer in time.
+        case busy
+        /// The element no longer exists; the app rebuilt its accessibility tree.
+        case gone
+    }
+
+    /// A window's subrole, title and minimized state, read in one call.
+    static func readWindowAttributes(of element: AXUIElement) -> WindowAttributesResult {
         var values: CFArray?
         let attributes = [kAXSubroleAttribute, kAXTitleAttribute, kAXMinimizedAttribute] as CFArray
         let result = AXUIElementCopyMultipleAttributeValues(element, attributes, AXCopyMultipleAttributeOptions(), &values)
-        if result == .cannotComplete {
-            return nil
+        switch result {
+        case .cannotComplete:
+            return .busy
+        case .invalidUIElement:
+            return .gone
+        default:
+            // Missing attributes come back as error values, which aren't strings or booleans.
+            guard result == .success, let array = values as? [Any], array.count == 3 else { return .attributes(WindowAttributes()) }
+            return .attributes(WindowAttributes(
+                subrole: array[0] as? String,
+                title: array[1] as? String ?? "",
+                isMinimized: (array[2] as? Bool) ?? false
+            ))
         }
-        // Missing attributes come back as error values, which aren't strings or booleans.
-        guard result == .success, let array = values as? [Any], array.count == 3 else { return WindowAttributes() }
-        return WindowAttributes(
-            subrole: array[0] as? String,
-            title: array[1] as? String ?? "",
-            isMinimized: (array[2] as? Bool) ?? false
-        )
     }
 
-    /// After this many element IDs the search starts over.
-    static let bruteForceLimit: UInt64 = 100_000
+    /// A window's subrole, title and minimized state. Nil when the app didn't answer in time.
+    static func windowAttributes(of element: AXUIElement) -> WindowAttributes? {
+        switch readWindowAttributes(of: element) {
+        case .attributes(let attributes): attributes
+        case .busy: nil
+        case .gone: WindowAttributes()
+        }
+    }
 
     /// Finds windows the app doesn't report, such as windows on other
     /// desktops, by trying element IDs from `cursor` on. Stops once every
     /// wanted window is found or `budget` seconds have passed, and returns
     /// where to continue next time. Each try asks the app, so keep the budget small.
+    ///
+    /// Element IDs only grow while the app runs, so the search never starts over.
     static func windowsByBruteForce(
         pid: pid_t,
         wanted: Set<CGWindowID>,
@@ -81,18 +100,21 @@ enum AX {
         var remaining = wanted
         var found: [CGWindowID: AXUIElement] = [:]
         var elementID = cursor
-        var tries: UInt64 = 0
         var token = Data(count: 20)
         token.replaceSubrange(0..<4, with: withUnsafeBytes(of: pid) { Data($0) })
         token.replaceSubrange(8..<12, with: withUnsafeBytes(of: Int32(0x636f_636f)) { Data($0) })
-        while !remaining.isEmpty, tries < bruteForceLimit, Date() < deadline {
+        while !remaining.isEmpty, Date() < deadline {
             token.replaceSubrange(12..<20, with: withUnsafeBytes(of: elementID) { Data($0) })
-            if let element = _AXUIElementCreateWithRemoteToken(token as CFData)?.takeRetainedValue(),
-               let id = windowID(of: element), remaining.remove(id) != nil {
-                found[id] = element
-            }
-            elementID = (elementID + 1) % bruteForceLimit
-            tries += 1
+            elementID += 1
+            guard
+                let element = _AXUIElementCreateWithRemoteToken(token as CFData)?.takeRetainedValue(),
+                let id = windowID(of: element), remaining.contains(id),
+                // Every control inside a window reports that window's ID too;
+                // only the window itself will do.
+                (value(kAXRoleAttribute, of: element) as? String) == kAXWindowRole
+            else { continue }
+            remaining.remove(id)
+            found[id] = element
         }
         return (found, elementID)
     }

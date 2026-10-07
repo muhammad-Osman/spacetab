@@ -48,7 +48,7 @@ struct SettingsView: View {
             generalTab
                 .tabItem { Label("General", systemImage: "gearshape") }
         }
-        .frame(width: 480, height: 440)
+        .frame(width: 480, height: 620)
         // Permissions and the login item can change in System Settings or the menu bar menu.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             launchStatus = LaunchAtLogin.status

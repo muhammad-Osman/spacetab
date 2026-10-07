@@ -58,7 +58,7 @@ SpaceTab works like <kbd>Alt</kbd> + <kbd>Tab</kbd> on Ubuntu and Windows, and s
 - **Menu bar icon**, which you can hide.
 - **Import and export settings** to move them to another Mac.
 - **Group windows by app.**
-- **Languages:** English, German, French, Spanish, Portuguese, Japanese and Chinese. The translations were not written by native speakers yet; corrections and new languages are welcome in `Resources/Localization`.
+- **Languages:** English, German, French, Spanish, Portuguese (Brazil), Japanese, and Simplified and Traditional Chinese. The translations were not written by native speakers yet; corrections and new languages are welcome in `Resources/Localization`.
 
 ---
 
@@ -136,7 +136,7 @@ The script quits a running SpaceTab first, so the next launch runs the new build
 
 The script signs the app ad hoc, and macOS treats each changed ad hoc build as a new app. When the signature changes, the script resets SpaceTab's Accessibility permission, and you grant it again after opening the new build. To keep the permission across builds, sign with your own certificate: `SIGN_IDENTITY="Apple Development: Your Name" scripts/build-app.sh`. The first build with a certificate needs one last grant. If System Settings shows SpaceTab as allowed but it doesn't work, remove it from the list with the minus button and add it again.
 
-**You need:** Xcode 16 or later and macOS 14 or later.
+**You need:** Xcode 26 or later to build. The app runs on macOS 14 or later.
 
 ### Releasing
 
