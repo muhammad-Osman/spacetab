@@ -2,7 +2,9 @@
 
 All notable changes to SpaceTab. The format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## Unreleased
+## 0.9.0 — 2026-10-09
+
+First public pre-release, unsigned: open it with right-click → Open the first time. It doesn't update itself yet.
 
 ### Added
 - ⌥ Tab switches between the windows on the current desktop, in most recently used order, with a quick tap flipping between the last two.

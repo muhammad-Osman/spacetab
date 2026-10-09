@@ -18,6 +18,11 @@ cask "spacetab" do
 
   app "SpaceTab.app"
 
+  caveats <<~EOS
+    SpaceTab is not signed with an Apple certificate yet. The first time,
+    right-click it in Applications and choose Open.
+  EOS
+
   uninstall quit: "io.github.muhammad-osman.spacetab"
 
   zap trash: [

@@ -53,6 +53,12 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/SpaceTab" "$APP/Contents/MacOS/SpaceTab"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+if [ -z "${SIGN_IDENTITY:-}" ]; then
+    # An unsigned build can't update itself: its signature changes with every
+    # build, and macOS ties the permissions to the signature, so an update
+    # would lose them. Without a feed URL the app doesn't check for updates.
+    /usr/libexec/PlistBuddy -c 'Delete :SUFeedURL' "$APP/Contents/Info.plist"
+fi
 cp -R Resources/Localization/*.lproj "$APP/Contents/Resources/"
 
 # Sparkle, for automatic updates. Its helpers are signed first, then the

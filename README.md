@@ -71,8 +71,6 @@ SpaceTab works like <kbd>Alt</kbd> + <kbd>Tab</kbd> on Ubuntu and Windows, and s
 
 ## Installation
 
-> Not released yet. These steps are for version 1.0.
-
 **Homebrew**
 
 ```bash
@@ -82,6 +80,8 @@ brew install --cask muhammad-Osman/tap/spacetab
 **Manual download**
 
 Download the latest `.dmg` from the [Releases](../../releases) page and drag **SpaceTab** into **Applications**.
+
+**Opening it the first time.** SpaceTab isn't signed with an Apple certificate yet, so macOS refuses to open it at first. Right-click **SpaceTab** in Applications and choose **Open**, or go to **System Settings → Privacy & Security** and click **Open Anyway**. This is needed once. Until SpaceTab is signed, it also doesn't update itself: new versions are on the Releases page.
 
 ---
 
