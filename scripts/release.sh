@@ -104,11 +104,12 @@ fi
 
 git push
 git push origin "v$VERSION"
+# Release notes come from this version's section of CHANGELOG.md.
+NOTES="$(awk -v v="$VERSION" '/^## /{p = index($0, "## " v) == 1} p' CHANGELOG.md | sed '1d')"
 if [ -n "$SIGNED" ]; then
-    gh release create "v$VERSION" "$DMG" "$APPCAST" --title "SpaceTab $VERSION" --generate-notes
+    gh release create "v$VERSION" "$DMG" "$APPCAST" --title "SpaceTab $VERSION" --notes "$NOTES"
 else
-    gh release create "v$VERSION" "$DMG" --title "SpaceTab $VERSION" --generate-notes --prerelease \
-        --notes-start-tag "" 2>/dev/null || gh release create "v$VERSION" "$DMG" --title "SpaceTab $VERSION" --generate-notes --prerelease
+    gh release create "v$VERSION" "$DMG" --title "SpaceTab $VERSION" --notes "$NOTES" --prerelease
 fi
 
 if [ -d "$TAP_DIR" ]; then
