@@ -209,15 +209,22 @@ enum AppSettings {
         ids.sorted().joined(separator: "\n")
     }
 
+    /// The chosen look, within what the system's accessibility settings
+    /// allow: Reduce Transparency makes the switcher solid, Reduce Motion
+    /// turns the fade off.
+    @MainActor
     static var appearance: SwitcherAppearance {
         let defaults = UserDefaults.standard
+        let workspace = NSWorkspace.shared
+        let opacity = defaults.object(forKey: Key.opacity) as? Double ?? defaultOpacity
+        let fade = (read(Key.animation) ?? defaultAnimation).fadeDuration
         return SwitcherAppearance(
             theme: read(Key.theme) ?? defaultTheme,
             scale: (read(Key.size) ?? defaultSize).scale,
             spacingFactor: (read(Key.spacing) ?? defaultSpacing).factor,
             cornerRadius: defaults.object(forKey: Key.cornerRadius) as? Double ?? defaultCornerRadius,
-            opacity: defaults.object(forKey: Key.opacity) as? Double ?? defaultOpacity,
-            fadeDuration: (read(Key.animation) ?? defaultAnimation).fadeDuration
+            opacity: workspace.accessibilityDisplayShouldReduceTransparency ? 1 : opacity,
+            fadeDuration: workspace.accessibilityDisplayShouldReduceMotion ? 0 : fade
         )
     }
 

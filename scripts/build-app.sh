@@ -26,13 +26,21 @@ ARCHS=(--arch arm64 --arch x86_64)
 swift build -c "$CONFIG" "${ARCHS[@]}"
 BIN_DIR="$(swift build -c "$CONFIG" "${ARCHS[@]}" --show-bin-path)"
 
+# A running SpaceTab is replaced only if it is this checkout's build. One
+# running from elsewhere (another checkout, or /Applications) is left alone,
+# and its permissions are not reset.
+REPLACING_RUNNING_APP=""
 if pgrep -x SpaceTab >/dev/null; then
-    osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 || true
-    for _ in $(seq 50); do
-        pgrep -x SpaceTab >/dev/null || break
-        sleep 0.1
-    done
-    pkill -x SpaceTab 2>/dev/null || true
+    RUNNING_PATH="$(ps -o comm= -p "$(pgrep -x SpaceTab | head -1)")"
+    if [ "$RUNNING_PATH" = "$PWD/$APP/Contents/MacOS/SpaceTab" ]; then
+        REPLACING_RUNNING_APP=1
+        osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 || true
+        for _ in $(seq 50); do
+            pgrep -x SpaceTab >/dev/null || break
+            sleep 0.1
+        done
+        pkill -x SpaceTab 2>/dev/null || true
+    fi
 fi
 
 OLD_REQ=""
@@ -75,7 +83,7 @@ sign "$APP"
 echo "Built $APP"
 
 NEW_REQ="$(designated_requirement "$APP")"
-if [ "$OLD_REQ" != "$NEW_REQ" ]; then
+if [ "$OLD_REQ" != "$NEW_REQ" ] && [ -z "$(pgrep -x SpaceTab)" -o -n "$REPLACING_RUNNING_APP" ]; then
     # Screen Recording is tied to the signature too; it is only needed for thumbnails.
     tccutil reset ScreenCapture "$BUNDLE_ID" >/dev/null 2>&1 || true
     if tccutil reset Accessibility "$BUNDLE_ID" >/dev/null 2>&1; then

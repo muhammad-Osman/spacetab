@@ -4,7 +4,7 @@
 
 Press <kbd>⌥ Option</kbd> + <kbd>Tab</kbd> to switch between the **windows on your current desktop**, not between apps from every desktop the way <kbd>⌘</kbd> + <kbd>Tab</kbd> does.
 
-> **Status: early development.** The features below are the project's plan. See the [Roadmap](#roadmap) for what is done.
+> **Status: release candidate.** Everything below is implemented and reviewed; the first release is being prepared. The [Roadmap](#roadmap) lists what has been tried out on a real Mac.
 
 ---
 
