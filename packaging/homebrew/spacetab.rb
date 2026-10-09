@@ -2,7 +2,7 @@
 # as Casks/spacetab.rb; scripts/release.sh fills in the version and checksum.
 cask "spacetab" do
   version "0.9.0"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "f269f53f57cbc51eb6b2c47c84364017d17872cdd1e4c2a74af73102f512a21e"
 
   url "https://github.com/muhammad-Osman/spacetab/releases/download/v#{version}/SpaceTab-#{version}.dmg"
   name "SpaceTab"
