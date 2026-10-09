@@ -3,7 +3,7 @@
 "General" = "一般";
 "Reopen SpaceTab" = "SpaceTab を開き直す";
 "Remove" = "削除";
-"⌥ Tab is paused: an app is using secure input" = "⌥ Tab は一時停止中です: アプリがセキュリティ保護された入力を使っています";
+"Secure input is on: search and window actions are unavailable" = "セキュリティ保護された入力が有効です: 検索とウインドウ操作は使えません";
 "Theme" = "テーマ";
 "Animation" = "アニメーション";
 "Off" = "オフ";

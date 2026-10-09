@@ -105,10 +105,19 @@ enum AX {
         token.replaceSubrange(8..<12, with: withUnsafeBytes(of: Int32(0x636f_636f)) { Data($0) })
         while !remaining.isEmpty, Date() < deadline {
             token.replaceSubrange(12..<20, with: withUnsafeBytes(of: elementID) { Data($0) })
+            guard let element = _AXUIElementCreateWithRemoteToken(token as CFData)?.takeRetainedValue() else {
+                elementID += 1
+                continue
+            }
+            var id: CGWindowID = 0
+            let result = _AXUIElementGetWindow(element, &id)
+            if result == .cannotComplete {
+                // The app stopped answering: this ID is tried again next time.
+                break
+            }
             elementID += 1
             guard
-                let element = _AXUIElementCreateWithRemoteToken(token as CFData)?.takeRetainedValue(),
-                let id = windowID(of: element), remaining.contains(id),
+                result == .success, remaining.contains(id),
                 // Every control inside a window reports that window's ID too;
                 // only the window itself will do.
                 (value(kAXRoleAttribute, of: element) as? String) == kAXWindowRole

@@ -3,7 +3,7 @@
 "General" = "Allgemein";
 "Reopen SpaceTab" = "SpaceTab erneut öffnen";
 "Remove" = "Entfernen";
-"⌥ Tab is paused: an app is using secure input" = "⌥ Tab pausiert: Eine App verwendet sichere Eingabe";
+"Secure input is on: search and window actions are unavailable" = "Sichere Eingabe ist aktiv: Suche und Fensteraktionen sind nicht verfügbar";
 "Theme" = "Erscheinungsbild";
 "Animation" = "Animation";
 "Off" = "Aus";

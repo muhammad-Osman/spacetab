@@ -96,7 +96,7 @@ The first time you open SpaceTab, macOS asks for two permissions:
 
 Turn both on in **System Settings → Privacy & Security**.
 
-<kbd>⌥</kbd> + <kbd>Tab</kbd> pauses while an app has **secure input** on, for example while you type in a password field or when Terminal's Secure Keyboard Entry is enabled. macOS hides key presses from other apps during that time. The menu bar icon's menu tells you when this happens.
+While an app has **secure input** on, for example while you type in a password field or when Terminal's Secure Keyboard Entry is enabled, macOS hides key presses from other apps. The shortcuts, arrow keys and Esc still work then, but search and the window actions (W, M, Q, F, H) don't. The menu bar icon's menu tells you when this is the case.
 
 SpaceTab does **not** collect data, has **no analytics** and makes **no network requests** apart from optional update checks.
 

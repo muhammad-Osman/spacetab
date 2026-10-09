@@ -153,8 +153,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(disabledItem(String(localized: "Accessibility permission needed")))
             menu.addItem(item(String(localized: "Open Accessibility Settings…"), #selector(openAccessibilitySettings)))
         } else if IsSecureEventInputEnabled() {
-            // Secure input hides key presses from event taps.
-            menu.addItem(disabledItem(String(localized: "⌥ Tab is paused: an app is using secure input")))
+            // Secure input hides key presses from the event tap; hot keys
+            // stand in for the shortcuts, but typing can't be read.
+            menu.addItem(disabledItem(String(localized: "Secure input is on: search and window actions are unavailable")))
         } else {
             menu.addItem(disabledItem(String(localized: "Press ⌥ Tab to switch windows")))
         }
@@ -215,10 +216,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updater.checkForUpdates()
     }
 
-    /// A dot on the menu bar icon while an update waits to be looked at.
+    /// A badge on the menu bar icon while an update waits to be looked at.
     private func showUpdateBadge() {
-        let name = updater.availableUpdate == nil ? "rectangle.on.rectangle" : "rectangle.on.rectangle.badge.plus"
+        let base = "rectangle.on.rectangle"
+        let name = updater.availableUpdate == nil ? base : "rectangle.on.rectangle.badge.gearshape"
+        // Never leave the item blank: fall back to the plain icon.
         statusItem.button?.image = NSImage(systemSymbolName: name, accessibilityDescription: "SpaceTab")
+            ?? NSImage(systemSymbolName: base, accessibilityDescription: "SpaceTab")
     }
 
     @objc private func openAccessibilitySettings() {

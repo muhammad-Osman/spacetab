@@ -5,11 +5,11 @@ import Foundation
 /// field, or Terminal's Secure Keyboard Entry). Secure input hides key
 /// presses from the event tap, but system hot keys still fire.
 ///
-/// The hot keys are registered all the time the tap runs. Normally the tap
-/// sees the shortcut first and swallows it, and a swallowed key never
-/// reaches the hot key, so nothing happens twice. The hot keys only act
-/// under secure input. While the switcher is open that way, the arrow keys
-/// and Esc are registered too, with the shortcut's modifiers.
+/// The hot keys are registered only while secure input is on, which is
+/// checked every second and whenever a modifier key changes. A registered
+/// hot key is taken from every app, so they must not exist at other times.
+/// While the switcher is open under secure input, the arrow keys and Esc are
+/// registered too, with the shortcut's modifiers.
 @MainActor
 final class HotKeyFallback {
     /// Called for a shortcut press under secure input. The flag means backwards (⇧).
@@ -33,7 +33,9 @@ final class HotKeyFallback {
     private var shortcuts: [Shortcut] = []
     private var isRunning = false
     private var isPaused = false
+    private var secureInput = false
     private var navigationModifiers: Shortcut.Modifiers?
+    private var timer: Timer?
 
     init() {
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
@@ -43,12 +45,27 @@ final class HotKeyFallback {
     func start(shortcuts: [Shortcut]) {
         isRunning = true
         self.shortcuts = shortcuts
-        apply()
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkSecureInput() }
+        }
+        checkSecureInput()
     }
 
     func stop() {
         isRunning = false
         navigationModifiers = nil
+        timer?.invalidate()
+        timer = nil
+        apply()
+    }
+
+    /// Secure input turns on and off with the focused text field; a modifier
+    /// change is a good moment to look again.
+    func checkSecureInput() {
+        let on = IsSecureEventInputEnabled()
+        guard on != secureInput else { return }
+        secureInput = on
         apply()
     }
 
@@ -92,7 +109,7 @@ final class HotKeyFallback {
             UnregisterEventHotKey(registration.ref)
         }
         registrations = [:]
-        guard isRunning, !isPaused else { return }
+        guard isRunning, !isPaused, secureInput else { return }
 
         for shortcut in shortcuts where !shortcut.modifiers.contains(.function) {
             // Hot keys can't include the Fn key.

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Prepares a release: sets the version, builds the DMG, updates the Homebrew
 # cask, commits and tags. Nothing is pushed or published unless --publish is
-# given.
+# given. With --dry-run, nothing is changed in the repository either: the
+# DMG is built and the signature printed, which is the only mode that works
+# without SIGN_IDENTITY.
 #
-# Usage: scripts/release.sh <version> [--publish]
+# Usage: scripts/release.sh <version> [--publish|--dry-run]
 #   e.g. scripts/release.sh 1.0.0
 #
 # For a build other Macs can open without warnings, set SIGN_IDENTITY to a
@@ -18,8 +20,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-VERSION="${1:?usage: scripts/release.sh <version> [--publish]}"
-PUBLISH="${2:-}"
+VERSION="${1:?usage: scripts/release.sh <version> [--publish|--dry-run]}"
+MODE="${2:-}"
 CASK="packaging/homebrew/spacetab.rb"
 TAP_DIR="../homebrew-tap"
 
@@ -28,11 +30,16 @@ if [ -n "$(git status --porcelain)" ]; then
     exit 1
 fi
 
-if [ "$PUBLISH" = "--publish" ] && [ -z "${SIGN_IDENTITY:-}" ]; then
+if [ "$MODE" != "--dry-run" ] && [ -z "${SIGN_IDENTITY:-}" ]; then
     # macOS ties the Accessibility and Screen Recording permissions to the
     # signature, and an ad hoc signature changes with every build. Users
     # would lose both permissions with every update.
-    echo "Set SIGN_IDENTITY to a Developer ID certificate before publishing." >&2
+    echo "Set SIGN_IDENTITY to a Developer ID certificate, or use --dry-run." >&2
+    exit 1
+fi
+
+if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+    echo "Tag v$VERSION already exists. Pick a new version." >&2
     exit 1
 fi
 
@@ -72,6 +79,13 @@ cat > "$APPCAST" <<XML
 XML
 
 SHA="$(shasum -a 256 "$DMG" | cut -d' ' -f1)"
+
+if [ "$MODE" = "--dry-run" ]; then
+    git checkout -- Resources/Info.plist
+    echo "Dry run: built $DMG (sha256 $SHA), update feed: $APPCAST. Nothing committed."
+    exit 0
+fi
+
 sed -i '' -e "s/^  version \".*\"/  version \"$VERSION\"/" -e "s/^  sha256 \".*\"/  sha256 \"$SHA\"/" "$CASK"
 
 git add Resources/Info.plist "$CASK"
@@ -79,7 +93,7 @@ git commit -q -m "Release $VERSION"
 git tag -a "v$VERSION" -m "SpaceTab $VERSION"
 echo "Committed and tagged v$VERSION. DMG: $DMG (sha256 $SHA), update feed: $APPCAST"
 
-if [ "$PUBLISH" != "--publish" ]; then
+if [ "$MODE" != "--publish" ]; then
     echo "Run again with --publish to push, create the GitHub release and update the tap."
     exit 0
 fi

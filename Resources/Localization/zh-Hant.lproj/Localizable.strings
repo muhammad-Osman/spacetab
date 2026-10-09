@@ -3,7 +3,7 @@
 "General" = "一般";
 "Reopen SpaceTab" = "重新打開 SpaceTab";
 "Remove" = "移除";
-"⌥ Tab is paused: an app is using secure input" = "⌥ Tab 已暫停：某個 App 正在使用安全輸入";
+"Secure input is on: search and window actions are unavailable" = "安全輸入已開啟：搜尋和視窗操作無法使用";
 "Theme" = "主題";
 "Animation" = "動畫";
 "Off" = "關閉";

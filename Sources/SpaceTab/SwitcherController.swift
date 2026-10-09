@@ -45,7 +45,14 @@ final class SwitcherController {
     private let listingQueue = DispatchQueue(label: "SpaceTab.listing", qos: .userInteractive)
     private let actionQueue = DispatchQueue(label: "SpaceTab.actions", qos: .userInteractive)
 
-    private var phase = Phase.idle
+    private var phase = Phase.idle {
+        didSet {
+            // Whatever path led here, nothing of the switcher may linger.
+            if case .idle = phase {
+                hotKeyFallback.switcherClosed()
+            }
+        }
+    }
     private var shortcuts = ShortcutSettings.load()
     private var shortcutsToken: NSObjectProtocol?
     /// The shortcut that opened the switcher. Letting go of its modifiers switches.
@@ -153,6 +160,7 @@ final class SwitcherController {
 
         switch type {
         case .flagsChanged:
+            hotKeyFallback.checkSecureInput()
             if let activeShortcut, !activeShortcut.isHeld(in: flags) {
                 modifiersReleased()
             }
@@ -413,26 +421,34 @@ final class SwitcherController {
         }
         let generation = self.generation
         let isRemoval = action == .close || action == .quitApp
-        let before = (windows: windows, index: currentIndex)
+        var removed: [(index: Int, window: WindowInfo)] = []
         if isRemoval {
+            removed = windows.enumerated()
+                .filter { action == .quitApp ? $0.element.pid == window.pid : $0.element.id == window.id }
+                .map { (index: $0.offset, window: $0.element) }
             apply(action, to: window, restoring: restoring)
         }
         actionQueue.async {
             let taken = action.perform(on: window, restoring: restoring)
             DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if !taken {
+                    NSSound.beep()
+                }
                 // Only while the switcher still shows a list; after a switch there is nothing to update.
-                guard let self, self.generation == generation, self.isCapturingKeys else { return }
+                guard self.generation == generation, self.isCapturingKeys else { return }
                 switch (taken, isRemoval) {
-                case (true, true):
+                case (true, true), (false, false):
                     break
                 case (true, false):
                     self.apply(action, to: window, restoring: restoring)
                 case (false, true):
-                    NSSound.beep()
-                    self.windows = before.windows
-                    self.reselect(index: before.index)
-                case (false, false):
-                    NSSound.beep()
+                    // The app kept the windows: put them back where they were,
+                    // leaving any other change made since alone.
+                    for entry in removed where !self.windows.contains(where: { $0.id == entry.window.id }) {
+                        self.windows.insert(entry.window, at: min(entry.index, self.windows.count))
+                    }
+                    self.reselect(index: self.currentIndex)
                 }
             }
         }
@@ -592,7 +608,7 @@ final class SwitcherController {
                 cancel()
                 return
             }
-            phase = .idle
+            close()
             switchTo(list.windows[selection.index])
         } else {
             windows = list.windows

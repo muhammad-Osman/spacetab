@@ -23,9 +23,10 @@ final class ThumbnailStore {
     /// Least recently used first, to drop old previews when over the limit.
     private var recentOrder: [CGWindowID] = []
     private var content: (windows: [CGWindowID: SCWindow], date: Date)?
-    /// Windows being captured right now. A new round doesn't capture them
-    /// again; their picture goes to whatever cells are showing when it arrives.
-    private var inFlight = Set<CGWindowID>()
+    /// Windows being captured right now, with the size asked for. A new round
+    /// doesn't capture them again unless it needs a bigger picture; the
+    /// picture goes to whatever cells are showing when it arrives.
+    private var inFlight: [CGWindowID: CGSize] = [:]
     /// Where each window is in the cells shown now, and how to update them.
     private var shownIndex: [CGWindowID: Int] = [:]
     private var shownUpdate: ((Int, CGImage) -> Void)?
@@ -79,7 +80,9 @@ final class ThumbnailStore {
         for (index, window) in windows.enumerated() where window.isOnScreen {
             if let date = capturedAt[window.id], Date().timeIntervalSince(date) < Self.freshEnough, let image = images[window.id] {
                 update(index, image)
-            } else if !inFlight.contains(window.id) {
+            } else if let running = inFlight[window.id], running.width >= maxPixelSize.width, running.height >= maxPixelSize.height {
+                continue
+            } else {
                 targets.append((index, window.id))
             }
         }
@@ -98,19 +101,20 @@ final class ThumbnailStore {
 
             guard let self, let capturable = await self.capturableWindows(for: targets.map(\.id)) else { return }
 
-            await withTaskGroup(of: (id: CGWindowID, image: CGImage?).self) { group in
+            await withTaskGroup(of: (id: CGWindowID, image: CGImage?, started: Date).self) { group in
                 var pending = targets.filter { capturable[$0.id] != nil }
                 func startNext() async {
                     guard self.round == round, !pending.isEmpty else { return }
                     let target = pending.removeFirst()
                     let window = capturable[target.id]!
-                    await MainActor.run { _ = self.inFlight.insert(target.id) }
+                    let started = Date()
+                    await MainActor.run { self.inFlight[target.id] = maxPixelSize }
                     group.addTask {
                         let image = await Self.captureImage(of: window, maxPixelSize: maxPixelSize) { late in
                             // Arrived after the watchdog gave up: still worth showing and keeping.
-                            Task { @MainActor in self.deliver(late, for: target.id) }
+                            Task { @MainActor in self.deliver(late, for: target.id, started: started) }
                         }
-                        return (target.id, image)
+                        return (target.id, image, started)
                     }
                 }
                 for _ in 0..<Self.maxConcurrentCaptures {
@@ -118,9 +122,9 @@ final class ThumbnailStore {
                 }
                 for await result in group {
                     await MainActor.run {
-                        self.inFlight.remove(result.id)
+                        self.inFlight[result.id] = nil
                         if let image = result.image {
-                            self.deliver(image, for: result.id)
+                            self.deliver(image, for: result.id, started: result.started)
                         }
                     }
                     await startNext()
@@ -131,7 +135,11 @@ final class ThumbnailStore {
 
     /// Keeps the picture (even after the switcher closed, for when the
     /// window is minimized) and shows it in the cell that has the window now.
-    private func deliver(_ image: CGImage, for id: CGWindowID) {
+    /// A picture older than the one already kept is dropped.
+    private func deliver(_ image: CGImage, for id: CGWindowID, started: Date) {
+        if let kept = capturedAt[id], kept > started {
+            return
+        }
         store(image, for: id)
         if let index = shownIndex[id] {
             shownUpdate?(index, image)

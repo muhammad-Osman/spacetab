@@ -31,7 +31,16 @@ final class WindowLister: @unchecked Sendable {
     /// Windows each app reported last time that the filter left out.
     private var lastRejected: [pid_t: Set<CGWindowID>] = [:]
     /// Where the search for each app's windows on other desktops continues.
-    private var bruteForceCursor: [pid_t: UInt64] = [:]
+    /// The search sweeps a range that starts small and grows while nothing
+    /// is found, so an element registered after the cursor passed its ID is
+    /// seen on the next sweep.
+    private struct BruteForceState {
+        var cursor: UInt64 = 0
+        var limit: UInt64 = 10_000
+        var launched: Date?
+    }
+    private static let bruteForceMaxLimit: UInt64 = 1_000_000
+    private var bruteForce: [pid_t: BruteForceState] = [:]
     /// How long one listing spends finding windows on other desktops.
     private static let bruteForceBudget: TimeInterval = 0.04
 
@@ -247,10 +256,21 @@ final class WindowLister: @unchecked Sendable {
                 missing.insert(candidate.id)
             }
             if !missing.isEmpty {
-                let result = AX.windowsByBruteForce(
-                    pid: pid, wanted: missing, from: bruteForceCursor[pid] ?? 0, budget: budgetPerApp
-                )
-                bruteForceCursor[pid] = result.cursor
+                let launched = NSRunningApplication(processIdentifier: pid)?.launchDate
+                var state = bruteForce[pid] ?? BruteForceState()
+                if state.launched != launched {
+                    // A different app with the same process ID starts from the beginning.
+                    state = BruteForceState(launched: launched)
+                }
+                let result = AX.windowsByBruteForce(pid: pid, wanted: missing, from: state.cursor, budget: budgetPerApp)
+                state.cursor = result.cursor
+                if result.cursor >= state.limit {
+                    // A whole sweep without finding everything: look again from
+                    // the start, over a wider range next time.
+                    state.cursor = 0
+                    state.limit = min(state.limit * 2, Self.bruteForceMaxLimit)
+                }
+                bruteForce[pid] = state
                 // Remembered right away: the element is the hard part to find.
                 for (id, element) in result.found {
                     lastKnown[pid, default: [:]][id] = CachedWindow(element: element, title: "")
@@ -507,5 +527,6 @@ final class WindowLister: @unchecked Sendable {
             let existing = ids.intersection(allIDs)
             return existing.isEmpty ? nil : existing
         }
+        bruteForce = bruteForce.filter { NSRunningApplication(processIdentifier: $0.key) != nil }
     }
 }
