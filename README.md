@@ -74,7 +74,8 @@ SpaceTab works like <kbd>Alt</kbd> + <kbd>Tab</kbd> on Ubuntu and Windows, and s
 **Homebrew**
 
 ```bash
-brew install --cask muhammad-Osman/tap/spacetab
+brew trust muhammad-osman/tap   # once: Homebrew asks before using a tap outside its own
+brew install --cask muhammad-osman/tap/spacetab
 ```
 
 **Manual download**
