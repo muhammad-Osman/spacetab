@@ -86,6 +86,10 @@
 "Keep the switcher open until I choose a window" = "Keep the switcher open until I choose a window";
 /* needs translation */
 "Window switcher" = "Window switcher";
+/* needs translation */
+"Show a preview of the selected window" = "Show a preview of the selected window";
+/* needs translation */
+"Previews need Screen Recording permission. Until then, no preview is shown." = "Previews need Screen Recording permission. Until then, no preview is shown.";
 "Esc" = "Esc";
 "Minimize window" = "最小化窗口";
 "Size" = "大小";

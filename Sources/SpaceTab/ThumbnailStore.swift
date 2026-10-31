@@ -7,6 +7,9 @@ import AppKit
 @MainActor
 final class ThumbnailStore {
     private static let limit = 60
+    /// Preview captures can be much larger than grid thumbnails. Keep the
+    /// cache bounded by memory as well as entry count.
+    private static let byteLimit = 64 * 1024 * 1024
     /// How many captures run at once. Each one costs the system a capture
     /// session, and too many at once stall screenshots system-wide.
     private static let maxConcurrentCaptures = 4
@@ -20,6 +23,8 @@ final class ThumbnailStore {
 
     private var images: [CGWindowID: CGImage] = [:]
     private var capturedAt: [CGWindowID: Date] = [:]
+    private var capturedSize: [CGWindowID: CGSize] = [:]
+    private var cachedBytes = 0
     /// Least recently used first, to drop old previews when over the limit.
     private var recentOrder: [CGWindowID] = []
     private var content: (windows: [CGWindowID: SCWindow], date: Date)?
@@ -30,6 +35,9 @@ final class ThumbnailStore {
     /// Where each window is in the cells shown now, and how to update them.
     private var shownIndex: [CGWindowID: Int] = [:]
     private var shownUpdate: ((Int, CGImage) -> Void)?
+    /// Separate from the grid's index callback: a selected-preview request
+    /// must not replace the callback for a thumbnail capture round.
+    private var previewUpdates: [CGWindowID: (CGImage) -> Void] = [:]
     /// Bumped by `stop()` and each `capture()`. Only the latest round starts
     /// new captures. Read from capture tasks as well; a stale read there only
     /// delays a stop.
@@ -46,6 +54,8 @@ final class ThumbnailStore {
         stop()
         images = [:]
         capturedAt = [:]
+        capturedSize = [:]
+        cachedBytes = 0
         recentOrder = []
         content = nil
     }
@@ -56,6 +66,7 @@ final class ThumbnailStore {
         round += 1
         shownUpdate = nil
         shownIndex = [:]
+        previewUpdates = [:]
     }
 
     /// Captures the on-screen windows among `windows`, the selected one
@@ -133,6 +144,41 @@ final class ThumbnailStore {
         }
     }
 
+    /// Captures one visible window for the selected-preview panel. The image
+    /// shares the thumbnail cache and capture bookkeeping, but has its own
+    /// id-keyed delivery callback so it cannot disturb a grid capture round.
+    func captureOne(_ window: WindowInfo, maxPixelSize: CGSize, update: @escaping @MainActor (CGImage) -> Void) {
+        guard ScreenRecordingPermission.isGranted, window.isOnScreen else { return }
+        if let date = capturedAt[window.id], Date().timeIntervalSince(date) < Self.freshEnough,
+           let image = images[window.id], let size = capturedSize[window.id],
+           size.width >= maxPixelSize.width, size.height >= maxPixelSize.height {
+            markUsed(window.id)
+            update(image)
+            return
+        }
+        previewUpdates[window.id] = update
+        if let running = inFlight[window.id], running.width >= maxPixelSize.width, running.height >= maxPixelSize.height {
+            return
+        }
+        inFlight[window.id] = maxPixelSize
+
+        Task { [weak self] in
+            guard let self, let capturable = await self.capturableWindows(for: [window.id]), let source = capturable[window.id] else {
+                self?.inFlight[window.id] = nil
+                self?.previewUpdates[window.id] = nil
+                return
+            }
+            let started = Date()
+            let image = await Self.captureImage(of: source, maxPixelSize: maxPixelSize) { late in
+                Task { @MainActor in self.deliver(late, for: window.id, started: started) }
+            }
+            self.inFlight[window.id] = nil
+            if let image {
+                self.deliver(image, for: window.id, started: started)
+            }
+        }
+    }
+
     /// Keeps the picture (even after the switcher closed, for when the
     /// window is minimized) and shows it in the cell that has the window now.
     /// A picture older than the one already kept is dropped.
@@ -144,6 +190,8 @@ final class ThumbnailStore {
         if let index = shownIndex[id] {
             shownUpdate?(index, image)
         }
+        let previewUpdate = previewUpdates.removeValue(forKey: id)
+        previewUpdate?(image)
     }
 
     /// The capturable windows, by ID. Reuses the last list while it is fresh
@@ -166,18 +214,32 @@ final class ThumbnailStore {
     private func prune(keeping liveIDs: Set<CGWindowID>) {
         images = images.filter { liveIDs.contains($0.key) }
         capturedAt = capturedAt.filter { liveIDs.contains($0.key) }
+        capturedSize = capturedSize.filter { liveIDs.contains($0.key) }
+        cachedBytes = images.values.reduce(0) { $0 + byteCount(of: $1) }
         recentOrder.removeAll { !liveIDs.contains($0) }
     }
 
     private func store(_ image: CGImage, for id: CGWindowID) {
+        if let previous = images[id] {
+            cachedBytes -= byteCount(of: previous)
+        }
         images[id] = image
         capturedAt[id] = Date()
+        capturedSize[id] = CGSize(width: image.width, height: image.height)
+        cachedBytes += byteCount(of: image)
         markUsed(id)
-        while recentOrder.count > Self.limit, let oldest = recentOrder.first {
+        while (recentOrder.count > Self.limit || cachedBytes > Self.byteLimit), let oldest = recentOrder.first {
             recentOrder.removeFirst()
-            images[oldest] = nil
+            if let removed = images.removeValue(forKey: oldest) {
+                cachedBytes -= byteCount(of: removed)
+            }
             capturedAt[oldest] = nil
+            capturedSize[oldest] = nil
         }
+    }
+
+    private func byteCount(of image: CGImage) -> Int {
+        image.width * image.height * 4
     }
 
     private func markUsed(_ id: CGWindowID) {

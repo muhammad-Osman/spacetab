@@ -31,6 +31,8 @@ struct SettingsView: View {
     private var showMenuBarIcon = AppSettings.defaultShowMenuBarIcon
     @AppStorage(AppSettings.Key.keepOpen)
     private var keepOpen = AppSettings.defaultKeepOpen
+    @AppStorage(AppSettings.Key.selectedPreview)
+    private var selectedPreview = AppSettings.defaultSelectedPreview
 
     @State private var shortcuts = ShortcutSettings.load()
     @State private var screenRecordingGranted = ScreenRecordingPermission.isGranted
@@ -61,6 +63,9 @@ struct SettingsView: View {
                 refreshScreenRecording()
             }
         }
+        .onChange(of: selectedPreview) { _, _ in
+            refreshScreenRecording()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .launchAtLoginChanged)) { _ in
             launchStatus = LaunchAtLogin.status
         }
@@ -77,27 +82,11 @@ struct SettingsView: View {
                 Picker("Style", selection: $style) {
                     ForEach(SwitcherStyle.allCases) { Text($0.title).tag($0) }
                 }
+                Toggle("Show a preview of the selected window", isOn: $selectedPreview)
                 if style == .thumbnails, !screenRecordingGranted {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("Thumbnails need Screen Recording permission. Until then, app icons are shown.")
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Allow…") {
-                                ScreenRecordingPermission.request()
-                                screenRecordingRequested = true
-                            }
-                        }
-                        if screenRecordingRequested {
-                            HStack {
-                                Text("Already allowed in System Settings? macOS needs SpaceTab reopened.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                Button("Reopen SpaceTab") { ScreenRecordingPermission.relaunch() }
-                            }
-                        }
-                    }
+                    screenRecordingHint(String(localized: "Thumbnails need Screen Recording permission. Until then, app icons are shown."))
+                } else if selectedPreview, !screenRecordingGranted {
+                    screenRecordingHint(String(localized: "Previews need Screen Recording permission. Until then, no preview is shown."))
                 }
                 Picker("Theme", selection: $theme) {
                     ForEach(Theme.allCases) { Text($0.title).tag($0) }
@@ -128,6 +117,29 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func screenRecordingHint(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(message)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Allow…") {
+                    ScreenRecordingPermission.request()
+                    screenRecordingRequested = true
+                }
+            }
+            if screenRecordingRequested {
+                HStack {
+                    Text("Already allowed in System Settings? macOS needs SpaceTab reopened.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Reopen SpaceTab") { ScreenRecordingPermission.relaunch() }
+                }
+            }
+        }
     }
 
     // MARK: - Windows

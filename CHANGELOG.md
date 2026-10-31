@@ -4,6 +4,7 @@ All notable changes to SpaceTab. The format follows [Keep a Changelog](https://k
 
 ## Unreleased
 
+- Add optional live previews for the selected window in Titles and App Icons styles.
 - Add an option to keep the switcher open until a window is chosen.
 - Announce switcher windows and selection changes to VoiceOver.
 

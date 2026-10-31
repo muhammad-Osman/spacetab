@@ -18,6 +18,9 @@ final class SwitcherPanel: NSPanel {
     var onClick: ((Int) -> Void)?
 
     private let thumbnails = ThumbnailStore()
+    private var previewPanel: SelectedPreviewPanel?
+    private var previewGeneration = 0
+    private var switcherAppearance = SwitcherAppearance()
     private let background = NSVisualEffectView()
     private let tint = NSView()
     private let scrollView = NSScrollView()
@@ -91,7 +94,7 @@ final class SwitcherPanel: NSPanel {
     ) {
         let wasVisible = isVisible
         thumbnails.stop()
-        if style != .thumbnails || !ScreenRecordingPermission.isGranted {
+        if (style != .thumbnails && !appearance.showsSelectedPreview) || !ScreenRecordingPermission.isGranted {
             // No screen contents are kept beyond what the style and the permission allow.
             thumbnails.clear()
         }
@@ -172,12 +175,13 @@ final class SwitcherPanel: NSPanel {
         }
 
         self.selectedIndex = selectedIndex
+
+        orderFrontRegardless()
         select(selectedIndex)
 
         if !wasVisible {
             fadeIn(duration: appearance.fadeDuration)
         }
-        orderFrontRegardless()
 
         if let thumbnailSize {
             let scale = screen?.backingScaleFactor ?? 2
@@ -207,6 +211,7 @@ final class SwitcherPanel: NSPanel {
     func select(_ index: Int) {
         guard cells.indices.contains(index) else {
             titleBelow.stringValue = ""
+            updateSelectedPreview()
             return
         }
         cells[safe: selectedIndex]?.isSelected = false
@@ -217,14 +222,18 @@ final class SwitcherPanel: NSPanel {
         NSAccessibility.post(element: cell, notification: .focusedUIElementChanged)
         let detail = cell.detail
         titleBelow.stringValue = detail.isEmpty ? cell.windowInfo.displayTitle : "\(cell.windowInfo.displayTitle) — \(detail)"
+        updateSelectedPreview()
     }
 
     override func orderOut(_ sender: Any?) {
+        previewGeneration += 1
         thumbnails.stop()
+        previewPanel?.orderOut(nil)
         super.orderOut(sender)
     }
 
     private func applyAppearance(_ appearance: SwitcherAppearance) {
+        switcherAppearance = appearance
         self.appearance = switch appearance.theme {
         case .system: nil
         case .light: NSAppearance(named: .aqua)
@@ -240,6 +249,52 @@ final class SwitcherPanel: NSPanel {
         tint.frame = background.bounds
     }
 
+    private func updateSelectedPreview() {
+        guard switcherAppearance.showsSelectedPreview,
+              cells.indices.contains(selectedIndex),
+              let screen = screenForPreview
+        else {
+            previewGeneration += 1
+            previewPanel?.orderOut(nil)
+            return
+        }
+        let window = cells[selectedIndex].windowInfo
+        let placeholder = window.icon ?? NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil) ?? NSImage()
+        let image = thumbnails.cached(window.id).map { NSImage(cgImage: $0, size: CGSize(width: $0.width, height: $0.height)) } ?? placeholder
+        let preview = previewPanel ?? SelectedPreviewPanel()
+        previewPanel = preview
+        preview.show(image: image, below: self, on: screen, appearance: switcherAppearance)
+
+        previewGeneration += 1
+        let generation = previewGeneration
+        guard window.isOnScreen else { return }
+        let maximum = CGSize(width: screen.visibleFrame.width * 0.45, height: screen.visibleFrame.height * 0.45)
+        let scale = screen.backingScaleFactor
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self, self.previewGeneration == generation,
+                  self.cells.indices.contains(self.selectedIndex),
+                  self.cells[self.selectedIndex].windowInfo.id == window.id
+            else { return }
+            self.thumbnails.captureOne(window, maxPixelSize: CGSize(width: maximum.width * scale, height: maximum.height * scale)) { [weak self] image in
+                guard let self, self.previewGeneration == generation,
+                      self.cells.indices.contains(self.selectedIndex),
+                      self.cells[self.selectedIndex].windowInfo.id == window.id,
+                      let screen = self.screenForPreview
+                else { return }
+                self.previewPanel?.show(
+                    image: NSImage(cgImage: image, size: CGSize(width: image.width, height: image.height)),
+                    below: self,
+                    on: screen,
+                    appearance: self.switcherAppearance
+                )
+            }
+        }
+    }
+
+    private var screenForPreview: NSScreen? {
+        NSScreen.screens.first { $0.frame.intersects(frame) } ?? NSScreen.main
+    }
+
     private func fadeIn(duration: TimeInterval) {
         guard duration > 0 else {
             alphaValue = 1
@@ -250,6 +305,87 @@ final class SwitcherPanel: NSPanel {
             context.duration = duration
             animator().alphaValue = 1
         }
+    }
+}
+
+/// A non-interactive visual companion to the switcher, kept below it in the
+/// window order so it never takes focus or intercepts a click.
+@MainActor
+private final class SelectedPreviewPanel: NSPanel {
+    private static let padding: CGFloat = 8
+    private static let gap: CGFloat = 8
+    private let background = NSVisualEffectView()
+    private let tint = NSView()
+    private let imageView = NSImageView()
+
+    init() {
+        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        isFloatingPanel = true
+        level = .popUpMenu
+        backgroundColor = .clear
+        isOpaque = false
+        hasShadow = true
+        hidesOnDeactivate = false
+        animationBehavior = .none
+        ignoresMouseEvents = true
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
+        setAccessibilityElement(false)
+
+        background.material = .hudWindow
+        background.blendingMode = .behindWindow
+        background.state = .active
+        background.wantsLayer = true
+        background.layer?.masksToBounds = true
+        background.setAccessibilityElement(false)
+        contentView = background
+
+        tint.wantsLayer = true
+        tint.autoresizingMask = [.width, .height]
+        tint.setAccessibilityElement(false)
+        background.addSubview(tint)
+
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.setAccessibilityElement(false)
+        background.addSubview(imageView)
+    }
+
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+
+    func show(image: NSImage, below switcher: NSPanel, on screen: NSScreen, appearance: SwitcherAppearance) {
+        self.appearance = switch appearance.theme {
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+        background.layer?.cornerRadius = appearance.cornerRadius
+        var tintColor = NSColor.windowBackgroundColor.withAlphaComponent(appearance.opacity)
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            tintColor = NSColor.windowBackgroundColor.withAlphaComponent(appearance.opacity)
+        }
+        tint.layer?.backgroundColor = tintColor.cgColor
+
+        let visible = screen.visibleFrame
+        let maximum = CGSize(
+            width: max(0, visible.width * 0.45 - 2 * Self.padding),
+            height: max(0, visible.height * 0.45 - 2 * Self.padding)
+        )
+        let sourceSize = image.size.width > 0 && image.size.height > 0 ? image.size : CGSize(width: 160, height: 100)
+        let imageSize = PreviewLayout.fittedSize(imageSize: sourceSize, in: maximum)
+        let size = CGSize(width: imageSize.width + 2 * Self.padding, height: imageSize.height + 2 * Self.padding)
+        let x = visible.midX - size.width / 2
+        let belowY = switcher.frame.minY - Self.gap - size.height
+        let y: CGFloat
+        if belowY >= visible.minY {
+            y = belowY
+        } else {
+            y = min(visible.maxY - size.height, switcher.frame.maxY + Self.gap)
+        }
+        setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: false)
+        tint.frame = background.bounds
+        imageView.image = image
+        imageView.frame = NSRect(x: Self.padding, y: Self.padding, width: imageSize.width, height: imageSize.height)
+        order(.below, relativeTo: switcher.windowNumber)
     }
 }
 

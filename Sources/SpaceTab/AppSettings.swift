@@ -155,6 +155,7 @@ enum AppSettings {
         static let opacity = "opacity"
         static let animation = "animation"
         static let keepOpen = "keepOpen"
+        static let selectedPreview = "selectedPreview"
     }
 
     static let defaultStyle = SwitcherStyle.titles
@@ -171,6 +172,7 @@ enum AppSettings {
     static let defaultOpacity = 0.0
     static let defaultAnimation = AnimationSpeed.fast
     static let defaultKeepOpen = false
+    static let defaultSelectedPreview = false
 
     static var style: SwitcherStyle {
         read(Key.style) ?? defaultStyle
@@ -202,6 +204,10 @@ enum AppSettings {
         UserDefaults.standard.object(forKey: Key.keepOpen) as? Bool ?? defaultKeepOpen
     }
 
+    static var selectedPreview: Bool {
+        UserDefaults.standard.object(forKey: Key.selectedPreview) as? Bool ?? defaultSelectedPreview
+    }
+
     /// Bundle IDs of apps whose windows never appear in the switcher.
     /// Stored as one line per app, so SwiftUI's @AppStorage can edit it.
     static var excludedBundleIDs: Set<String> {
@@ -231,7 +237,8 @@ enum AppSettings {
             spacingFactor: (read(Key.spacing) ?? defaultSpacing).factor,
             cornerRadius: defaults.object(forKey: Key.cornerRadius) as? Double ?? defaultCornerRadius,
             opacity: workspace.accessibilityDisplayShouldReduceTransparency ? 1 : opacity,
-            fadeDuration: workspace.accessibilityDisplayShouldReduceMotion ? 0 : fade
+            fadeDuration: workspace.accessibilityDisplayShouldReduceMotion ? 0 : fade,
+            showsSelectedPreview: selectedPreview && style != .thumbnails && ScreenRecordingPermission.isGranted
         )
     }
 
@@ -248,6 +255,8 @@ struct SwitcherAppearance: Sendable {
     var cornerRadius: CGFloat = AppSettings.defaultCornerRadius
     var opacity: CGFloat = AppSettings.defaultOpacity
     var fadeDuration: TimeInterval = 0
+    /// Whether this invocation shows a separate preview panel for the selection.
+    var showsSelectedPreview = false
 }
 
 /// What to list, captured on the main thread when the switcher opens.
