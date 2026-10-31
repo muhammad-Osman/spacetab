@@ -26,6 +26,9 @@ final class SwitcherController {
         /// presses and the ⌥ release are recorded and applied when it arrives.
         case loading(backwards: Bool, moves: Int, released: Bool)
         case open(SwitcherSelection)
+        /// Modifiers were released with Keep Open enabled. The selection waits
+        /// for an explicit choice, like a search does.
+        case held(SwitcherSelection)
         /// Typing filters the list. The switcher stays open without ⌥, and
         /// Return switches.
         case searching(query: String, selection: SwitcherSelection)
@@ -62,6 +65,9 @@ final class SwitcherController {
     private var matching: [WindowInfo] = []
     private var options = ListingOptions(minimizedWindows: .atEnd, hiddenAppWindows: .atEnd)
     private var appearance = SwitcherAppearance()
+    /// Captured when the switcher opens so a settings change does not alter an
+    /// already-open switcher's modifier-release behavior.
+    private var keepOpen = false
     /// The screen the switcher opens on: the one with the mouse when ⌥ Tab was pressed.
     private var screen: NSScreen?
     /// Bumped on every open and cancel, so a window list that arrives late is ignored.
@@ -137,7 +143,7 @@ final class SwitcherController {
         switch phase {
         case .idle: false
         case .loading(_, _, let released): !released
-        case .open, .searching: true
+        case .open, .held, .searching: true
         }
     }
 
@@ -145,6 +151,20 @@ final class SwitcherController {
         if case .searching = phase { return true }
         return false
     }
+
+    private var isHeld: Bool {
+        if case .held = phase { return true }
+        return false
+    }
+
+    private var isOpen: Bool {
+        if case .open = phase { return true }
+        return false
+    }
+
+    /// Both search and Keep Open wait for a click elsewhere or activation of
+    /// another app to cancel the switcher.
+    private var isWaitingForChoice: Bool { isSearching || isHeld }
 
     /// Handles one keyboard event. Returns `true` to swallow it.
     func handle(_ type: CGEventType, _ event: CGEvent) -> Bool {
@@ -210,7 +230,7 @@ final class SwitcherController {
         swallowedKeys.removeAll()
         // Keys typed while the tap was off already went through; send the held ones too.
         keyHold.release(to: nil)
-        if isCapturingKeys, !isSearching, let activeShortcut,
+        if isCapturingKeys, !isSearching, !isHeld, let activeShortcut,
            !activeShortcut.isHeld(in: CGEventSource.flagsState(.combinedSessionState)) {
             cancel()
         }
@@ -224,7 +244,7 @@ final class SwitcherController {
             // A new press means the earlier release happened where the tap couldn't see it.
             swallowedKeys.remove(keyCode)
         }
-        if isCapturingKeys, !isSearching, let activeShortcut, !activeShortcut.isHeld(in: flags) {
+        if isCapturingKeys, !isSearching, !isHeld, let activeShortcut, !activeShortcut.isHeld(in: flags) {
             // The modifier release was missed, for example while macOS had the
             // tap turned off. Give the keyboard back instead of eating keys.
             cancel()
@@ -253,6 +273,31 @@ final class SwitcherController {
             if handleNavigationKey(keyCode) { break }
             // Keys with a modifier beyond the shortcut's own are something else.
             guard extraModifiers(in: flags, keyCode: keyCode).isEmpty else { break }
+            let characters = Self.characters(keyCode: keyCode, shift: flags.contains(.maskShift))
+            if characters.contains("/") {
+                startSearch()
+            } else if let action = characters.lazy.compactMap({ WindowAction(character: $0) }).first {
+                perform(action)
+            }
+        case .held:
+            let extra = extraModifiers(in: flags, keyCode: keyCode)
+            if extra.contains(.command) || extra.contains(.control) {
+                // System shortcuts belong to macOS once the modifiers that
+                // opened the switcher have been released.
+                swallowedKeys.remove(keyCode)
+                cancel()
+                return false
+            }
+            if keyCode == KeyCode.tab {
+                move(by: flags.contains(.maskShift) ? -1 : 1)
+                break
+            }
+            if keyCode == KeyCode.return || keyCode == KeyCode.enter {
+                commit()
+                break
+            }
+            if handleNavigationKey(keyCode) { break }
+            guard extra.isEmpty else { break }
             let characters = Self.characters(keyCode: keyCode, shift: flags.contains(.maskShift))
             if characters.contains("/") {
                 startSearch()
@@ -315,7 +360,7 @@ final class SwitcherController {
             break
         case .loading:
             move(by: delta)
-        case .open, .searching:
+        case .open, .held, .searching:
             let target = panel.index(from: currentIndex, rowDelta: delta)
             move(by: target - currentIndex)
         }
@@ -351,7 +396,7 @@ final class SwitcherController {
         if swallowedKeys.remove(keyCode) != nil {
             return true
         }
-        if isCapturingKeys, !isSearching, let activeShortcut, !activeShortcut.isHeld(in: flags) {
+        if isCapturingKeys, !isSearching, !isHeld, let activeShortcut, !activeShortcut.isHeld(in: flags) {
             cancel()
         }
         return false
@@ -364,18 +409,23 @@ final class SwitcherController {
     // MARK: - Search and actions
 
     private func startSearch() {
-        guard case .open = phase else { return }
+        guard isOpen || isHeld else { return }
         matching = windows
         phase = .searching(query: "", selection: SwitcherSelection(count: matching.count, index: 0))
         showPanel()
-        // Without a modifier held, nothing else ends the search: watch for
-        // the user moving on to another app or clicking outside the switcher.
+        startWatchingForCancellation()
+    }
+
+    /// Without a modifier held, watch for the user moving on to another app
+    /// or clicking outside the switcher.
+    private func startWatchingForCancellation() {
+        stopWatchingSearch()
         searchActivationToken = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] note in
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             MainActor.assumeIsolated {
-                guard let self, self.isSearching else { return }
+                guard let self, self.isWaitingForChoice else { return }
                 // A switch made just before may still be landing; that's not the user leaving.
                 if let pid = app?.processIdentifier, self.openedFromPIDs.contains(pid) { return }
                 self.cancel()
@@ -384,7 +434,7 @@ final class SwitcherController {
         // Clicks on the switcher itself don't reach a global monitor.
         searchClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
             MainActor.assumeIsolated {
-                if self?.isSearching == true { self?.cancel() }
+                if self?.isWaitingForChoice == true { self?.cancel() }
             }
         }
     }
@@ -466,6 +516,8 @@ final class SwitcherController {
         switch phase {
         case .open:
             phase = .open(SwitcherSelection(count: listedWindows.count, index: index))
+        case .held:
+            phase = .held(SwitcherSelection(count: listedWindows.count, index: index))
         case .searching(let query, _):
             phase = .searching(query: query, selection: SwitcherSelection(count: matching.count, index: index))
         default:
@@ -528,7 +580,7 @@ final class SwitcherController {
 
     private var currentIndex: Int {
         switch phase {
-        case .open(let selection), .searching(_, let selection): selection.index
+        case .open(let selection), .held(let selection), .searching(_, let selection): selection.index
         default: 0
         }
     }
@@ -569,6 +621,7 @@ final class SwitcherController {
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         options = ListingOptions.current(scope: shortcut.scope, frontmostPID: frontmostPID)
         appearance = AppSettings.appearance
+        keepOpen = AppSettings.keepOpen
         screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
         let options = self.options
         openedFromPIDs = Set([frontmostPID, pendingSwitch?.pid].compactMap { $0 })
@@ -608,8 +661,18 @@ final class SwitcherController {
                 cancel()
                 return
             }
-            close()
-            switchTo(list.windows[selection.index])
+            windows = list.windows
+            if keepOpen {
+                // A quick tap started no key hold: there is no switch target
+                // yet. Release defensively in case a prior event did start one.
+                keyHold.release(to: nil)
+                phase = .held(selection)
+                showPanel()
+                startWatchingForCancellation()
+            } else {
+                close()
+                switchTo(list.windows[selection.index])
+            }
         } else {
             windows = list.windows
             phase = .open(selection)
@@ -623,6 +686,10 @@ final class SwitcherController {
         case .open(let selection):
             guard selection.index != index, listedWindows.indices.contains(index) else { return }
             phase = .open(SwitcherSelection(count: selection.count, index: index))
+            panel.select(index)
+        case .held(let selection):
+            guard selection.index != index, listedWindows.indices.contains(index) else { return }
+            phase = .held(SwitcherSelection(count: selection.count, index: index))
             panel.select(index)
         case .searching(let query, let selection):
             guard selection.index != index, listedWindows.indices.contains(index) else { return }
@@ -643,6 +710,10 @@ final class SwitcherController {
             selection.move(by: delta)
             phase = .open(selection)
             panel.select(selection.index)
+        case var .held(selection):
+            selection.move(by: delta)
+            phase = .held(selection)
+            panel.select(selection.index)
         case .searching(let query, var selection):
             selection.move(by: delta)
             phase = .searching(query: query, selection: selection)
@@ -652,19 +723,30 @@ final class SwitcherController {
 
     private func modifiersReleased() {
         switch phase {
-        case .idle, .searching:
+        case .idle, .held, .searching:
             break
         case let .loading(backwards, moves, released):
             guard !released else { return }
             phase = .loading(backwards: backwards, moves: moves, released: true)
-            keyHold.start()
+            if !keepOpen {
+                // Keys typed from here on belong to the switch target.
+                keyHold.start()
+            }
+            // Harmless once the list has arrived: the phase is no longer
+            // .loading. Without it, a stalled listing could pop the panel
+            // up seconds after the tap.
             let generation = self.generation
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.loadingTimeout) { [weak self] in
                 guard let self, self.generation == generation, case .loading = self.phase else { return }
                 self.cancel()
             }
-        case .open:
-            commit()
+        case .open(let selection):
+            if keepOpen {
+                phase = .held(selection)
+                startWatchingForCancellation()
+            } else {
+                commit()
+            }
         }
     }
 

@@ -43,6 +43,7 @@ final class SwitcherPanel: NSPanel {
         animationBehavior = .none
         acceptsMouseMovedEvents = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
+        setAccessibilityLabel(String(localized: "Window switcher"))
 
         background.material = .hudWindow
         background.blendingMode = .behindWindow
@@ -213,6 +214,7 @@ final class SwitcherPanel: NSPanel {
         let cell = cells[index]
         cell.isSelected = true
         cell.scrollToVisible(cell.bounds)
+        NSAccessibility.post(element: cell, notification: .focusedUIElementChanged)
         let detail = cell.detail
         titleBelow.stringValue = detail.isEmpty ? cell.windowInfo.displayTitle : "\(cell.windowInfo.displayTitle) — \(detail)"
     }

@@ -82,6 +82,10 @@
 "Click a shortcut to change it, then press the new keys. Hold the modifier keys and press the key to open the switcher; let go to switch. Add ⇧ to go backwards. Up to %lld shortcuts." = "Cliquez sur un raccourci pour le modifier, puis appuyez sur les nouvelles touches. Maintenez les touches de modification et appuyez sur la touche pour ouvrir le sélecteur ; relâchez pour changer de fenêtre. Ajoutez ⇧ pour reculer. Jusqu’à %lld raccourcis.";
 "Other desktop" = "Autre bureau";
 "Minimized" = "Réduite";
+/* needs translation */
+"Keep the switcher open until I choose a window" = "Keep the switcher open until I choose a window";
+/* needs translation */
+"Window switcher" = "Window switcher";
 "Esc" = "Échap";
 "Minimize window" = "Réduire la fenêtre";
 "Size" = "Taille";
