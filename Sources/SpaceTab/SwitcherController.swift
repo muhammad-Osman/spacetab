@@ -65,6 +65,9 @@ final class SwitcherController {
     private var matching: [WindowInfo] = []
     private var options = ListingOptions(minimizedWindows: .atEnd, hiddenAppWindows: .atEnd)
     private var appearance = SwitcherAppearance()
+    /// Captured when the switcher opens so a settings change does not alter an
+    /// already-open switcher's modifier-release behavior.
+    private var keepOpen = false
     /// The screen the switcher opens on: the one with the mouse when ⌥ Tab was pressed.
     private var screen: NSScreen?
     /// Bumped on every open and cancel, so a window list that arrives late is ignored.
@@ -241,7 +244,7 @@ final class SwitcherController {
             // A new press means the earlier release happened where the tap couldn't see it.
             swallowedKeys.remove(keyCode)
         }
-        if isCapturingKeys, !isSearching, let activeShortcut, !activeShortcut.isHeld(in: flags) {
+        if isCapturingKeys, !isSearching, !isHeld, let activeShortcut, !activeShortcut.isHeld(in: flags) {
             // The modifier release was missed, for example while macOS had the
             // tap turned off. Give the keyboard back instead of eating keys.
             cancel()
@@ -277,6 +280,14 @@ final class SwitcherController {
                 perform(action)
             }
         case .held:
+            let extra = extraModifiers(in: flags, keyCode: keyCode)
+            if extra.contains(.command) || extra.contains(.control) {
+                // System shortcuts belong to macOS once the modifiers that
+                // opened the switcher have been released.
+                swallowedKeys.remove(keyCode)
+                cancel()
+                return false
+            }
             if keyCode == KeyCode.tab {
                 move(by: flags.contains(.maskShift) ? -1 : 1)
                 break
@@ -286,7 +297,7 @@ final class SwitcherController {
                 break
             }
             if handleNavigationKey(keyCode) { break }
-            guard extraModifiers(in: flags, keyCode: keyCode).isEmpty else { break }
+            guard extra.isEmpty else { break }
             let characters = Self.characters(keyCode: keyCode, shift: flags.contains(.maskShift))
             if characters.contains("/") {
                 startSearch()
@@ -610,6 +621,7 @@ final class SwitcherController {
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         options = ListingOptions.current(scope: shortcut.scope, frontmostPID: frontmostPID)
         appearance = AppSettings.appearance
+        keepOpen = AppSettings.keepOpen
         screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
         let options = self.options
         openedFromPIDs = Set([frontmostPID, pendingSwitch?.pid].compactMap { $0 })
@@ -650,7 +662,10 @@ final class SwitcherController {
                 return
             }
             windows = list.windows
-            if AppSettings.keepOpen {
+            if keepOpen {
+                // A quick tap started no key hold: there is no switch target
+                // yet. Release defensively in case a prior event did start one.
+                keyHold.release(to: nil)
                 phase = .held(selection)
                 showPanel()
                 startWatchingForCancellation()
@@ -713,14 +728,16 @@ final class SwitcherController {
         case let .loading(backwards, moves, released):
             guard !released else { return }
             phase = .loading(backwards: backwards, moves: moves, released: true)
-            keyHold.start()
-            let generation = self.generation
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.loadingTimeout) { [weak self] in
-                guard let self, self.generation == generation, case .loading = self.phase else { return }
-                self.cancel()
+            if !keepOpen {
+                keyHold.start()
+                let generation = self.generation
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.loadingTimeout) { [weak self] in
+                    guard let self, self.generation == generation, case .loading = self.phase else { return }
+                    self.cancel()
+                }
             }
         case .open(let selection):
-            if AppSettings.keepOpen {
+            if keepOpen {
                 phase = .held(selection)
                 startWatchingForCancellation()
             } else {

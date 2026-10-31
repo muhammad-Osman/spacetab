@@ -19,6 +19,7 @@ class SwitcherCell: NSView {
         super.init(frame: frame)
         wantsLayer = true
         layer?.cornerRadius = 8
+        setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityLabel([window.displayTitle, window.appName, stateText]
             .compactMap { $0 }

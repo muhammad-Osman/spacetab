@@ -50,7 +50,7 @@ struct SettingsView: View {
             generalTab
                 .tabItem { Label("General", systemImage: "gearshape") }
         }
-        .frame(width: 480, height: 620)
+        .frame(width: 480, height: 650)
         // Permissions and the login item can change in System Settings or the menu bar menu.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             launchStatus = LaunchAtLogin.status
@@ -244,8 +244,8 @@ struct SettingsView: View {
                     Text(launchError)
                         .foregroundStyle(.red)
                 }
-                Toggle("Show menu bar icon", isOn: $showMenuBarIcon)
                 Toggle("Keep the switcher open until I choose a window", isOn: $keepOpen)
+                Toggle("Show menu bar icon", isOn: $showMenuBarIcon)
                 if !showMenuBarIcon {
                     Text("To open Settings without the icon, open SpaceTab again from Applications or Spotlight.")
                         .font(.caption)
