@@ -729,12 +729,16 @@ final class SwitcherController {
             guard !released else { return }
             phase = .loading(backwards: backwards, moves: moves, released: true)
             if !keepOpen {
+                // Keys typed from here on belong to the switch target.
                 keyHold.start()
-                let generation = self.generation
-                DispatchQueue.main.asyncAfter(deadline: .now() + Self.loadingTimeout) { [weak self] in
-                    guard let self, self.generation == generation, case .loading = self.phase else { return }
-                    self.cancel()
-                }
+            }
+            // Harmless once the list has arrived: the phase is no longer
+            // .loading. Without it, a stalled listing could pop the panel
+            // up seconds after the tap.
+            let generation = self.generation
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.loadingTimeout) { [weak self] in
+                guard let self, self.generation == generation, case .loading = self.phase else { return }
+                self.cancel()
             }
         case .open(let selection):
             if keepOpen {
