@@ -2,6 +2,11 @@
 
 All notable changes to SpaceTab. The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## Unreleased
+
+- Add an option to keep the switcher open until a window is chosen.
+- Announce switcher windows and selection changes to VoiceOver.
+
 ## 0.9.0 — 2026-10-09
 
 First public pre-release, unsigned: open it with right-click → Open the first time. It doesn't update itself yet.

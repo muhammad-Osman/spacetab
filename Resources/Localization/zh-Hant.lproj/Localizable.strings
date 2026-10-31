@@ -82,6 +82,10 @@
 "Click a shortcut to change it, then press the new keys. Hold the modifier keys and press the key to open the switcher; let go to switch. Add ⇧ to go backwards. Up to %lld shortcuts." = "按一下快速鍵即可更改，然後按下新的按鍵。按住修飾鍵並按下按鍵即可打開切換器，放開即切換。加上 ⇧ 可反向切換。最多 %lld 個快速鍵。";
 "Other desktop" = "其他桌面";
 "Minimized" = "已縮到最小";
+/* needs translation */
+"Keep the switcher open until I choose a window" = "Keep the switcher open until I choose a window";
+/* needs translation */
+"Window switcher" = "Window switcher";
 "Esc" = "Esc";
 "Minimize window" = "將視窗縮到最小";
 "Size" = "大小";

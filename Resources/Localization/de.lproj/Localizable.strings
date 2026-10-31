@@ -82,6 +82,10 @@
 "Click a shortcut to change it, then press the new keys. Hold the modifier keys and press the key to open the switcher; let go to switch. Add ⇧ to go backwards. Up to %lld shortcuts." = "Klicke auf einen Kurzbefehl, um ihn zu ändern, und drücke dann die neuen Tasten. Halte die Sondertasten gedrückt und drücke die Taste, um den Umschalter zu öffnen; lass los, um zu wechseln. Mit ⇧ geht es rückwärts. Bis zu %lld Kurzbefehle.";
 "Other desktop" = "Anderer Schreibtisch";
 "Minimized" = "Im Dock";
+/* needs translation */
+"Keep the switcher open until I choose a window" = "Keep the switcher open until I choose a window";
+/* needs translation */
+"Window switcher" = "Window switcher";
 "Esc" = "Esc";
 "Minimize window" = "Fenster im Dock ablegen";
 "Size" = "Größe";

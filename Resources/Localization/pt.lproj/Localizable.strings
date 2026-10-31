@@ -82,6 +82,10 @@
 "Click a shortcut to change it, then press the new keys. Hold the modifier keys and press the key to open the switcher; let go to switch. Add ⇧ to go backwards. Up to %lld shortcuts." = "Clique em um atalho para alterá-lo e pressione as novas teclas. Segure as teclas modificadoras e pressione a tecla para abrir o alternador; solte para alternar. Adicione ⇧ para voltar. Até %lld atalhos.";
 "Other desktop" = "Outra mesa";
 "Minimized" = "Minimizada";
+/* needs translation */
+"Keep the switcher open until I choose a window" = "Keep the switcher open until I choose a window";
+/* needs translation */
+"Window switcher" = "Window switcher";
 "Esc" = "Esc";
 "Minimize window" = "Minimizar a janela";
 "Size" = "Tamanho";

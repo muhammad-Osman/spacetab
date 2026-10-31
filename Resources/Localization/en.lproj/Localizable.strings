@@ -82,6 +82,8 @@
 "Click a shortcut to change it, then press the new keys. Hold the modifier keys and press the key to open the switcher; let go to switch. Add ⇧ to go backwards. Up to %lld shortcuts." = "Click a shortcut to change it, then press the new keys. Hold the modifier keys and press the key to open the switcher; let go to switch. Add ⇧ to go backwards. Up to %lld shortcuts.";
 "Other desktop" = "Other desktop";
 "Minimized" = "Minimized";
+"Keep the switcher open until I choose a window" = "Keep the switcher open until I choose a window";
+"Window switcher" = "Window switcher";
 "Esc" = "Esc";
 "Minimize window" = "Minimize window";
 "Size" = "Size";

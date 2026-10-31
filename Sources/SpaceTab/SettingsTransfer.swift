@@ -17,6 +17,7 @@ enum SettingsTransfer {
         AppSettings.Key.cornerRadius, AppSettings.Key.opacity, AppSettings.Key.animation,
         AppSettings.Key.minimizedWindows, AppSettings.Key.hiddenAppWindows, AppSettings.Key.screens,
         AppSettings.Key.excludedApps, AppSettings.Key.groupByApp, AppSettings.Key.showMenuBarIcon,
+        AppSettings.Key.keepOpen,
     ]
 
     /// Every setting the user has changed, plus the shortcuts, as JSON.

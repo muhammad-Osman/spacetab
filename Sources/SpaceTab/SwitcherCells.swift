@@ -8,7 +8,10 @@ class SwitcherCell: NSView {
     var onClick: (() -> Void)?
 
     var isSelected = false {
-        didSet { updateAppearance() }
+        didSet {
+            updateAppearance()
+            setAccessibilitySelected(isSelected)
+        }
     }
 
     init(window: WindowInfo, frame: NSRect) {
@@ -16,6 +19,12 @@ class SwitcherCell: NSView {
         super.init(frame: frame)
         wantsLayer = true
         layer?.cornerRadius = 8
+        setAccessibilityRole(.button)
+        setAccessibilityLabel([window.displayTitle, window.appName, stateText]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: ", "))
+        setAccessibilitySelected(false)
     }
 
     required init?(coder: NSCoder) {

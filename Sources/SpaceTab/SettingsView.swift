@@ -29,6 +29,8 @@ struct SettingsView: View {
     private var groupByApp = AppSettings.defaultGroupByApp
     @AppStorage(AppSettings.Key.showMenuBarIcon)
     private var showMenuBarIcon = AppSettings.defaultShowMenuBarIcon
+    @AppStorage(AppSettings.Key.keepOpen)
+    private var keepOpen = AppSettings.defaultKeepOpen
 
     @State private var shortcuts = ShortcutSettings.load()
     @State private var screenRecordingGranted = ScreenRecordingPermission.isGranted
@@ -243,6 +245,7 @@ struct SettingsView: View {
                         .foregroundStyle(.red)
                 }
                 Toggle("Show menu bar icon", isOn: $showMenuBarIcon)
+                Toggle("Keep the switcher open until I choose a window", isOn: $keepOpen)
                 if !showMenuBarIcon {
                     Text("To open Settings without the icon, open SpaceTab again from Applications or Spotlight.")
                         .font(.caption)

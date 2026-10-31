@@ -154,6 +154,7 @@ enum AppSettings {
         static let cornerRadius = "cornerRadius"
         static let opacity = "opacity"
         static let animation = "animation"
+        static let keepOpen = "keepOpen"
     }
 
     static let defaultStyle = SwitcherStyle.titles
@@ -169,6 +170,7 @@ enum AppSettings {
     /// 0 is see-through (blurred), 1 is solid.
     static let defaultOpacity = 0.0
     static let defaultAnimation = AnimationSpeed.fast
+    static let defaultKeepOpen = false
 
     static var style: SwitcherStyle {
         read(Key.style) ?? defaultStyle
@@ -193,6 +195,11 @@ enum AppSettings {
 
     static var showMenuBarIcon: Bool {
         UserDefaults.standard.object(forKey: Key.showMenuBarIcon) as? Bool ?? defaultShowMenuBarIcon
+    }
+
+    /// Whether the switcher waits for an explicit choice after modifiers are released.
+    static var keepOpen: Bool {
+        UserDefaults.standard.object(forKey: Key.keepOpen) as? Bool ?? defaultKeepOpen
     }
 
     /// Bundle IDs of apps whose windows never appear in the switcher.
