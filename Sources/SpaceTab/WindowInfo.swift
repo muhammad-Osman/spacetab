@@ -1,7 +1,7 @@
 import AppKit
 
 struct WindowInfo {
-    enum State: Sendable {
+    enum State: Sendable, Equatable {
         case normal
         case minimized
         /// The window's app is hidden (⌘H).

@@ -6,6 +6,17 @@ struct WindowList {
     let windows: [WindowInfo]
     /// Whether the first window is the one you are switching away from.
     let firstIsCurrent: Bool
+    /// Candidate windows before most-recent ordering. This is inexpensive to
+    /// order again with fresh history when opening from the warm cache.
+    let rawWindows: [WindowInfo]
+    let focusedElsewhere: Bool
+
+    init(windows: [WindowInfo], firstIsCurrent: Bool, rawWindows: [WindowInfo]? = nil, focusedElsewhere: Bool = false) {
+        self.windows = windows
+        self.firstIsCurrent = firstIsCurrent
+        self.rawWindows = rawWindows ?? windows
+        self.focusedElsewhere = focusedElsewhere
+    }
 }
 
 /// Lists the windows on the current desktop.
@@ -434,7 +445,7 @@ final class WindowLister: @unchecked Sendable {
 
         if let pendingSwitch, pendingSwitch.pid != frontmostPID {
             // You are still on the way to that window: treat it as current.
-            return WindowList(windows: ordered, firstIsCurrent: ordered.first?.id == pendingSwitch.id)
+            return WindowList(windows: ordered, firstIsCurrent: ordered.first?.id == pendingSwitch.id, rawWindows: windows, focusedElsewhere: focusedElsewhere)
         }
         if let focusedID, let index = ordered.firstIndex(where: { $0.id == focusedID }), index > 0 {
             // A focus change may have been missed; the focused window is always current.
@@ -442,7 +453,9 @@ final class WindowLister: @unchecked Sendable {
         }
         return WindowList(
             windows: ordered,
-            firstIsCurrent: !focusedElsewhere && frontmostPID != nil && ordered.first?.pid == frontmostPID
+            firstIsCurrent: !focusedElsewhere && frontmostPID != nil && ordered.first?.pid == frontmostPID,
+            rawWindows: windows,
+            focusedElsewhere: focusedElsewhere
         )
     }
 
