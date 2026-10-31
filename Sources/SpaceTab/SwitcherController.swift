@@ -647,7 +647,7 @@ final class SwitcherController {
         screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
         let options = self.options
         openedFromPIDs = Set([frontmostPID, pendingSwitch?.pid].compactMap { $0 })
-        if let cached = windowCache.usable(options: options) {
+        if let cached = windowCache.usable(options: options), !cached.windows.isEmpty {
             let cachedList = ordered(
                 cached.windows,
                 ranks: ranks,
@@ -725,7 +725,8 @@ final class SwitcherController {
 
     private func reconcile(with list: WindowList) {
         guard isCapturingKeys || isWaitingForChoice else { return }
-        let reconciliation = WindowListReconciler.reconcile(shown: windows, fresh: list.windows, selectedID: selectedWindow?.id)
+        let selectedID = selectedWindow?.id
+        let reconciliation = WindowListReconciler.reconcile(shown: windows, fresh: list.windows, selectedID: selectedID)
         guard reconciliation.changed else { return }
         guard !reconciliation.windows.isEmpty else {
             cancel()
@@ -739,7 +740,7 @@ final class SwitcherController {
             phase = .held(SwitcherSelection(count: windows.count, index: reconciliation.selectedIndex))
         case .searching(let query, _):
             matching = WindowSearch.filter(windows, query: query)
-            let index = selectedWindow.flatMap { selected in matching.firstIndex { $0.id == selected.id } }
+            let index = selectedID.flatMap { id in matching.firstIndex { $0.id == id } }
                 ?? min(reconciliation.selectedIndex, max(0, matching.count - 1))
             phase = .searching(query: query, selection: SwitcherSelection(count: matching.count, index: index))
         case .idle, .loading:
