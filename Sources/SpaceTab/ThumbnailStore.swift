@@ -30,6 +30,9 @@ final class ThumbnailStore {
     /// Where each window is in the cells shown now, and how to update them.
     private var shownIndex: [CGWindowID: Int] = [:]
     private var shownUpdate: ((Int, CGImage) -> Void)?
+    /// Separate from the grid's index callback: a selected-preview request
+    /// must not replace the callback for a thumbnail capture round.
+    private var previewUpdates: [CGWindowID: (CGImage) -> Void] = [:]
     /// Bumped by `stop()` and each `capture()`. Only the latest round starts
     /// new captures. Read from capture tasks as well; a stale read there only
     /// delays a stop.
@@ -56,6 +59,7 @@ final class ThumbnailStore {
         round += 1
         shownUpdate = nil
         shownIndex = [:]
+        previewUpdates = [:]
     }
 
     /// Captures the on-screen windows among `windows`, the selected one
@@ -133,6 +137,33 @@ final class ThumbnailStore {
         }
     }
 
+    /// Captures one visible window for the selected-preview panel. The image
+    /// shares the thumbnail cache and capture bookkeeping, but has its own
+    /// id-keyed delivery callback so it cannot disturb a grid capture round.
+    func captureOne(_ window: WindowInfo, maxPixelSize: CGSize, update: @escaping @MainActor (CGImage) -> Void) {
+        guard ScreenRecordingPermission.isGranted, window.isOnScreen else { return }
+        previewUpdates[window.id] = update
+        if let running = inFlight[window.id], running.width >= maxPixelSize.width, running.height >= maxPixelSize.height {
+            return
+        }
+        inFlight[window.id] = maxPixelSize
+
+        Task { [weak self] in
+            guard let self, let capturable = await self.capturableWindows(for: [window.id]), let source = capturable[window.id] else {
+                self?.inFlight[window.id] = nil
+                return
+            }
+            let started = Date()
+            let image = await Self.captureImage(of: source, maxPixelSize: maxPixelSize) { late in
+                Task { @MainActor in self.deliver(late, for: window.id, started: started) }
+            }
+            self.inFlight[window.id] = nil
+            if let image {
+                self.deliver(image, for: window.id, started: started)
+            }
+        }
+    }
+
     /// Keeps the picture (even after the switcher closed, for when the
     /// window is minimized) and shows it in the cell that has the window now.
     /// A picture older than the one already kept is dropped.
@@ -144,6 +175,8 @@ final class ThumbnailStore {
         if let index = shownIndex[id] {
             shownUpdate?(index, image)
         }
+        let previewUpdate = previewUpdates.removeValue(forKey: id)
+        previewUpdate?(image)
     }
 
     /// The capturable windows, by ID. Reuses the last list while it is fresh

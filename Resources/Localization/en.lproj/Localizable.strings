@@ -84,6 +84,8 @@
 "Minimized" = "Minimized";
 "Keep the switcher open until I choose a window" = "Keep the switcher open until I choose a window";
 "Window switcher" = "Window switcher";
+"Show a preview of the selected window" = "Show a preview of the selected window";
+"Previews need Screen Recording permission. Until then, app icons are shown." = "Previews need Screen Recording permission. Until then, app icons are shown.";
 "Esc" = "Esc";
 "Minimize window" = "Minimize window";
 "Size" = "Size";

@@ -1,5 +1,15 @@
 import CoreGraphics
 
+/// Sizing for the selected-window preview without letting a small source
+/// become excessively large.
+enum PreviewLayout {
+    static func fittedSize(imageSize: CGSize, in maximum: CGSize, maximumScale: CGFloat = 2) -> CGSize {
+        guard imageSize.width > 0, imageSize.height > 0, maximum.width > 0, maximum.height > 0 else { return .zero }
+        let scale = min(maximumScale, maximum.width / imageSize.width, maximum.height / imageSize.height)
+        return CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+    }
+}
+
 /// Rows and columns of equal cells, for the App Icons and Thumbnails styles.
 struct GridLayout: Equatable {
     let count: Int

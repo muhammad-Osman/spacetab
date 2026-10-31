@@ -86,6 +86,10 @@
 "Keep the switcher open until I choose a window" = "Keep the switcher open until I choose a window";
 /* needs translation */
 "Window switcher" = "Window switcher";
+/* needs translation */
+"Show a preview of the selected window" = "Show a preview of the selected window";
+/* needs translation */
+"Previews need Screen Recording permission. Until then, app icons are shown." = "Previews need Screen Recording permission. Until then, app icons are shown.";
 "Esc" = "Esc";
 "Minimize window" = "ウインドウをしまう";
 "Size" = "サイズ";
