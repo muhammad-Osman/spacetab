@@ -86,7 +86,7 @@ struct SettingsView: View {
                 if style == .thumbnails, !screenRecordingGranted {
                     screenRecordingHint(String(localized: "Thumbnails need Screen Recording permission. Until then, app icons are shown."))
                 } else if selectedPreview, !screenRecordingGranted {
-                    screenRecordingHint(String(localized: "Previews need Screen Recording permission. Until then, app icons are shown."))
+                    screenRecordingHint(String(localized: "Previews need Screen Recording permission. Until then, no preview is shown."))
                 }
                 Picker("Theme", selection: $theme) {
                     ForEach(Theme.allCases) { Text($0.title).tag($0) }
