@@ -260,7 +260,7 @@ struct SwitcherAppearance: Sendable {
 }
 
 /// What to list, captured on the main thread when the switcher opens.
-struct ListingOptions: Sendable {
+struct ListingOptions: Sendable, Equatable {
     var minimizedWindows: WindowPlacement
     var hiddenAppWindows: WindowPlacement
     var excludedBundleIDs: Set<String> = []

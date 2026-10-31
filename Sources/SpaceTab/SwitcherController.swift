@@ -40,11 +40,16 @@ final class SwitcherController {
     private let history: WindowHistory
     private let panel = SwitcherPanel()
     private let lister = WindowLister()
+    private let windowCache = WindowListCache()
     private let activator = WindowActivator()
     private let keyHold = KeyHold()
     /// Opens the switcher when an app has secure input on and the tap sees no keys.
     private let hotKeyFallback = HotKeyFallback()
     private var recordingToken: NSObjectProtocol?
+    private var activationToken: NSObjectProtocol?
+    private var spaceToken: NSObjectProtocol?
+    private var cacheRefreshTimer: Timer?
+    private var tapIsRunning = false
     private let listingQueue = DispatchQueue(label: "SpaceTab.listing", qos: .userInteractive)
     private let actionQueue = DispatchQueue(label: "SpaceTab.actions", qos: .userInteractive)
 
@@ -102,6 +107,19 @@ final class SwitcherController {
             // A hot key would take the keys the recorder is waiting for.
             MainActor.assumeIsolated { self?.hotKeyFallback.setPaused(ShortcutSettings.isRecording) }
         }
+        activationToken = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleCacheRefresh() }
+        }
+        spaceToken = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.windowCache.invalidate()
+                self?.scheduleCacheRefresh()
+            }
+        }
         hotKeyFallback.onShortcut = { [weak self] shortcut, backwards in
             self?.shortcutPressed(shortcut, backwards: backwards)
         }
@@ -131,10 +149,14 @@ final class SwitcherController {
     /// Hot keys stand in for the event tap while an app has secure input
     /// on. They are registered only while the tap runs.
     func setHotKeysEnabled(_ enabled: Bool) {
+        tapIsRunning = enabled
         if enabled {
             hotKeyFallback.start(shortcuts: shortcuts)
+            scheduleCacheRefresh()
         } else {
             hotKeyFallback.stop()
+            cacheRefreshTimer?.invalidate()
+            cacheRefreshTimer = nil
         }
     }
 
@@ -625,6 +647,17 @@ final class SwitcherController {
         screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
         let options = self.options
         openedFromPIDs = Set([frontmostPID, pendingSwitch?.pid].compactMap { $0 })
+        if let cached = windowCache.usable(options: options), !cached.windows.isEmpty {
+            let cachedList = ordered(
+                cached.windows,
+                ranks: ranks,
+                frontmostPID: frontmostPID,
+                pendingSwitch: pendingSwitch,
+                focusedElsewhere: cached.focusedElsewhere,
+                options: options
+            )
+            presentInitial(cachedList, generation: generation)
+        }
         let lister = self.lister
         listingQueue.async {
             let list = lister.windowsOnCurrentDesktop(
@@ -634,12 +667,22 @@ final class SwitcherController {
                 options: options
             )
             DispatchQueue.main.async { [weak self] in
-                self?.listReady(list, generation: generation)
+                self?.listReady(list, generation: generation, options: options)
             }
         }
     }
 
-    private func listReady(_ list: WindowList, generation: Int) {
+    private func listReady(_ list: WindowList, generation: Int, options: ListingOptions) {
+        windowCache.store(list, options: options)
+        guard generation == self.generation else { return }
+        if case .loading = phase {
+            presentInitial(list, generation: generation)
+        } else {
+            reconcile(with: list)
+        }
+    }
+
+    private func presentInitial(_ list: WindowList, generation: Int) {
         guard generation == self.generation, case let .loading(backwards, moves, released) = phase else { return }
         guard !list.windows.isEmpty else {
             cancel()
@@ -677,6 +720,79 @@ final class SwitcherController {
             windows = list.windows
             phase = .open(selection)
             showPanel()
+        }
+    }
+
+    private func reconcile(with list: WindowList) {
+        guard isCapturingKeys || isWaitingForChoice else { return }
+        let selectedID = selectedWindow?.id
+        let reconciliation = WindowListReconciler.reconcile(shown: windows, fresh: list.windows, selectedID: selectedID)
+        guard reconciliation.changed else { return }
+        guard !reconciliation.windows.isEmpty else {
+            cancel()
+            return
+        }
+        windows = reconciliation.windows
+        switch phase {
+        case .open:
+            phase = .open(SwitcherSelection(count: windows.count, index: reconciliation.selectedIndex))
+        case .held:
+            phase = .held(SwitcherSelection(count: windows.count, index: reconciliation.selectedIndex))
+        case .searching(let query, _):
+            matching = WindowSearch.filter(windows, query: query)
+            let index = selectedID.flatMap { id in matching.firstIndex { $0.id == id } }
+                ?? min(reconciliation.selectedIndex, max(0, matching.count - 1))
+            phase = .searching(query: query, selection: SwitcherSelection(count: matching.count, index: index))
+        case .idle, .loading:
+            return
+        }
+        showPanel()
+    }
+
+    private func ordered(
+        _ rawWindows: [WindowInfo],
+        ranks: [CGWindowID: Int],
+        frontmostPID: pid_t?,
+        pendingSwitch: PendingSwitch?,
+        focusedElsewhere: Bool,
+        options: ListingOptions
+    ) -> WindowList {
+        var atEnd = Set<WindowInfo.State>()
+        if options.minimizedWindows == .atEnd { atEnd.insert(.minimized) }
+        if options.hiddenAppWindows == .atEnd { atEnd.insert(.appHidden) }
+        return WindowLister.order(
+            rawWindows,
+            ranks: ranks,
+            focusedID: nil,
+            frontmostPID: frontmostPID,
+            pendingSwitch: pendingSwitch,
+            focusedElsewhere: focusedElsewhere,
+            atEnd: atEnd,
+            groupByApp: options.groupByApp
+        )
+    }
+
+    private func scheduleCacheRefresh() {
+        guard tapIsRunning, case .idle = phase else { return }
+        cacheRefreshTimer?.invalidate()
+        cacheRefreshTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshCache() }
+        }
+    }
+
+    private func refreshCache() {
+        guard tapIsRunning, case .idle = phase, let shortcut = shortcuts.first else { return }
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let options = ListingOptions.current(scope: shortcut.scope, frontmostPID: frontmostPID)
+        let ranks = history.ranks()
+        let pendingSwitch = history.pendingSwitch()
+        let lister = self.lister
+        listingQueue.async { [weak self] in
+            let list = lister.windowsOnCurrentDesktop(ranks: ranks, frontmostPID: frontmostPID, pendingSwitch: pendingSwitch, options: options)
+            DispatchQueue.main.async {
+                guard let self, self.tapIsRunning, case .idle = self.phase else { return }
+                self.windowCache.store(list, options: options)
+            }
         }
     }
 
@@ -785,5 +901,6 @@ final class SwitcherController {
         windows = []
         matching = []
         panel.orderOut(nil)
+        scheduleCacheRefresh()
     }
 }
